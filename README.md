@@ -24,23 +24,25 @@ cargo run -- --show-fps  # with a live FPS / frame-time / entity-count overlay
 | `Shift` (hold) | Pan faster |
 | `Q` / `E` | Rotate camera 90° (animated) |
 | `Scroll wheel` | Zoom in / out |
-| `Left click` | Start / confirm (and chain) a road segment |
-| `Right click` | Cancel the in-progress road segment |
+| `C` | Toggle straight / curve road mode |
+| `Left click` | Place road (see below) |
+| `Right click` | Cancel / finalize the in-progress road |
 
 ## Road placement
 
-- A translucent gray **circle** with an opaque ring stroke marks the cursor.
-  When it's within snap range of an existing road, it snaps to the nearest
-  point on that road.
-- **Left click** starts a road (splitting an existing road if it lands on its
-  interior, forming a T-junction). A translucent preview follows the cursor.
-- Each **further left click** commits a segment and chains a new one from its
-  end, so consecutive segments can be placed quickly.
-- **Right click** finalizes the road and returns to neutral.
+Toggle between **straight** and **curve** mode with `C`.
 
-Roads are straight segments rendered as one tessellated mesh with **round joins
-and caps** (via [lyon](https://lib.rs/crates/lyon)), so width stays consistent
-at any turn angle and junctions/crossings join cleanly.
+- **Straight**: left-click starts a road (splitting an existing road if it lands
+  on its interior, forming a T-junction). A translucent preview follows the
+  cursor; each further left-click commits a segment and chains a new one from
+  its end. Right-click finalizes.
+- **Curve**: left-click sets the start, a second left-click sets the control
+  point, and a third left-click confirms the end — a quadratic Bezier curve.
+
+The cursor is a translucent gray circle with an opaque ring stroke, snapping to
+existing roads when close. Roads are rendered as one tessellated mesh with
+**round joins and caps** (via [lyon](https://lib.rs/crates/lyon)), so width stays
+consistent at any turn angle and junctions/crossings join cleanly.
 
 ## CLI options (argh)
 

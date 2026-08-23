@@ -1,20 +1,18 @@
-//! Road-placement mechanic: a flat ground plane and straight road segments the
-//! player draws with the mouse, rendered as one tessellated mesh with smooth
-//! (round) joins and caps.
+//! Road-placement mechanic: a flat ground plane and road segments the player
+//! draws with the mouse, rendered as one tessellated mesh with smooth (round)
+//! joins and caps.
 //!
 //! The road network is a set of polylines ("chains"). Committed chains are
 //! stroked with lyon (round joins + round caps) into a single flat mesh, which
 //! gives consistent road width at any turn angle and clean T-junctions and
-//! crossings.
+//! crossings. A quadratic-Bezier curve is sampled into a polyline before being
+//! added, so curves and straight segments share one rendering path.
 //!
-//! Interaction model:
-//! - A translucent gray circle (diameter = road width) with an opaque ring
-//!   stroke marks the cursor, snapping onto an existing road when close.
-//! - Left-click starts a chain (splitting an existing chain if it lands on its
-//!   interior, forming a T-junction).
-//! - Each further left-click commits a segment and chains a new one from its
-//!   end, so consecutive segments can be placed quickly.
-//! - Right-click finalizes the chain and returns to neutral.
+//! Two placement modes (toggle with `C`):
+//! - **Straight** (default): left-click starts a chain; each further left-click
+//!   commits a segment and chains; right-click finalizes.
+//! - **Curve**: left-click sets the start, a second left-click sets the control
+//!   point, and a third left-click confirms the end (a quadratic Bezier).
 
 use bevy::{
     asset::RenderAssetUsages,
@@ -65,10 +63,8 @@ const CURSOR_STROKE_WIDTH: f32 = 0.06;
 /// Shared meshes/materials for the road mechanic.
 #[derive(Resource)]
 pub(crate) struct RoadAssets {
-    road_preview: Handle<StandardMaterial>,
-    /// Flat unit rectangle (1.0 × `ROAD_WIDTH`) laid flat and scaled per segment
-    /// to draw the translucent preview.
-    preview_mesh: Handle<Mesh>,
+    /// Single reused mesh handle for the preview ribbon (rebuilt each frame).
+    preview_handle: Handle<Mesh>,
 }
 
 /// The committed road network: a set of polylines (`(x, z)` points).
@@ -77,14 +73,25 @@ pub(crate) struct RoadNetwork {
     chains: Vec<Vec<Vec2>>,
 }
 
+/// Which road tool is active.
+#[derive(Resource, Default, Clone, Copy, Debug)]
+pub(crate) enum RoadMode {
+    #[default]
+    Straight,
+    Curve,
+}
+
 /// Placement interaction state.
 #[derive(Resource, Default)]
 pub(crate) enum Placement {
     #[default]
     Neutral,
-    /// A chain is being drawn: `points` are its committed vertices so far (one
-    /// per confirmed segment), and `preview` is the translucent preview entity.
-    Placing { points: Vec<Vec2>, preview: Entity },
+    /// Straight mode: `points` are the chain's committed vertices so far.
+    Straight { points: Vec<Vec2> },
+    /// Curve mode: start point set, waiting for the control point.
+    CurveStart { p0: Vec2 },
+    /// Curve mode: start + control set, waiting for the end point.
+    Curve { p0: Vec2, p1: Vec2 },
 }
 
 /// The translucent circle + ring marking the cursor's ground position.
@@ -137,13 +144,13 @@ pub(crate) fn setup_roads(
     let cursor_fill = solid_material(&mut materials, ROAD_RGB, 0.4);
     let cursor_stroke = solid_material(&mut materials, CURSOR_STROKE_RGB, 1.0);
 
-    let preview_mesh = meshes.add(Mesh::from(Rectangle::new(1.0, ROAD_WIDTH)));
+    let preview_handle = meshes.add(tessellate_chains(&[]));
 
     commands.insert_resource(RoadAssets {
-        road_preview: road_preview.clone(),
-        preview_mesh: preview_mesh.clone(),
+        preview_handle: preview_handle.clone(),
     });
     commands.insert_resource(RoadNetwork::default());
+    commands.insert_resource(RoadMode::default());
     commands.insert_resource(Placement::default());
 
     // Ground plane (a large flat quad in the XZ plane at y = 0).
@@ -155,10 +162,20 @@ pub(crate) fn setup_roads(
 
     // The merged road mesh (starts empty; rebuilt as roads are placed).
     commands.spawn((
-        Mesh3d(meshes.add(tessellate_roads(&RoadNetwork::default(), &[]))),
+        Mesh3d(meshes.add(tessellate_chains(&[]))),
         MeshMaterial3d(road_opaque),
         RoadMeshMarker,
         Transform::default(),
+    ));
+
+    // The preview ribbon (persistent; its mesh is rebuilt and it is shown/hidden
+    // as the player places roads).
+    commands.spawn((
+        Mesh3d(preview_handle),
+        MeshMaterial3d(road_preview),
+        PreviewRoad,
+        Transform::default(),
+        Visibility::Hidden,
     ));
 
     // Cursor: a flat circle (translucent fill) plus an opaque ring stroke,
@@ -189,22 +206,23 @@ pub(crate) fn setup_roads(
 }
 
 /// Per-frame road placement: moves the cursor, handles clicks, and updates /
-/// commits / finalizes chains.
+/// commits / finalizes roads.
 ///
 /// Runs in `PostUpdate` after transform propagation so the camera's
 /// `GlobalTransform` reflects this frame's pan/rotation.
 pub(crate) fn road_placement_system(
-    mut commands: Commands,
     assets: Res<RoadAssets>,
+    mut mode: ResMut<RoadMode>,
     mut placement: ResMut<Placement>,
     mut network: ResMut<RoadNetwork>,
     mut meshes: ResMut<Assets<Mesh>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<MouseButton>>,
     camera_q: Query<(&Camera, &GlobalTransform)>,
     window_q: Query<&Window, With<PrimaryWindow>>,
-    buttons: Res<ButtonInput<MouseButton>>,
-    mut cursor_q: Query<&mut Transform, (With<CursorMarker>, Without<PreviewRoad>)>,
-    mut preview_q: Query<&mut Transform, (With<PreviewRoad>, Without<CursorMarker>)>,
-    mut road_mesh_q: Query<&mut Mesh3d, (With<RoadMeshMarker>, Without<CursorMarker>)>,
+    mut cursor_q: Query<&mut Transform, With<CursorMarker>>,
+    mut preview_vis_q: Query<&mut Visibility, With<PreviewRoad>>,
+    mut road_mesh_q: Query<&mut Mesh3d, With<RoadMeshMarker>>,
 ) {
     let Ok((camera, camera_transform)) = camera_q.single() else {
         return;
@@ -229,38 +247,44 @@ pub(crate) fn road_placement_system(
         tf.translation = Vec3::new(snapped.x, 0.0, snapped.y);
     }
 
+    // Toggle straight/curve mode (only while neutral, so it never disrupts an
+    // in-progress placement).
+    if keys.just_pressed(KeyCode::KeyC) && matches!(*placement, Placement::Neutral) {
+        *mode = match *mode {
+            RoadMode::Straight => RoadMode::Curve,
+            RoadMode::Curve => RoadMode::Straight,
+        };
+        info!("road mode: {:?}", *mode);
+    }
+
+    // Compute the preview polyline from the current state.
+    let preview_polyline: Vec<Vec2> = match &*placement {
+        Placement::Neutral => Vec::new(),
+        Placement::Straight { points } => {
+            let mut poly = points.clone();
+            poly.push(snapped);
+            poly
+        }
+        Placement::CurveStart { p0 } => vec![*p0, snapped],
+        Placement::Curve { p0, p1 } => sample_quadratic_bezier(*p0, *p1, snapped),
+    };
+    update_preview(&assets, &mut meshes, &mut preview_vis_q, &preview_polyline);
+
     // Take ownership of the state, compute the next state, then put it back.
     let state = std::mem::replace(&mut *placement, Placement::Neutral);
-
-    let new_state = match state {
-        Placement::Neutral => {
+    let new_state = match (state, *mode) {
+        (Placement::Neutral, RoadMode::Straight) => {
             if buttons.just_pressed(MouseButton::Left) {
-                // Start a new chain. If the start lands on an existing road's
-                // interior, split that chain so a T-junction node is formed.
                 split_chain_at(&mut network, snapped);
-                let preview = spawn_preview(&mut commands, &assets, snapped, snapped);
-                Placement::Placing {
+                Placement::Straight {
                     points: vec![snapped],
-                    preview,
                 }
             } else {
                 Placement::Neutral
             }
         }
-        Placement::Placing {
-            mut points,
-            preview,
-        } => {
-            // Draw the preview from the last committed point to the cursor.
-            if let Some(last) = points.last().copied() {
-                if let Ok(mut tf) = preview_q.get_mut(preview) {
-                    set_road_transform(&mut tf, last, snapped);
-                }
-            }
-
+        (Placement::Straight { mut points }, RoadMode::Straight) => {
             if buttons.just_pressed(MouseButton::Left) {
-                // Commit this segment: append the snapped point and rebuild the
-                // merged mesh so the committed chain renders opaque.
                 if points
                     .last()
                     .copied()
@@ -269,22 +293,73 @@ pub(crate) fn road_placement_system(
                     points.push(snapped);
                 }
                 rebuild_road_mesh(&network, &points, &mut meshes, &mut road_mesh_q);
-                Placement::Placing { points, preview }
+                Placement::Straight { points }
             } else if buttons.just_pressed(MouseButton::Right) {
-                // Finalize: move the chain into the network and leave placing.
                 if points.len() >= 2 {
                     network.chains.push(points);
                 }
-                commands.entity(preview).despawn();
                 rebuild_road_mesh(&network, &[], &mut meshes, &mut road_mesh_q);
                 Placement::Neutral
             } else {
-                Placement::Placing { points, preview }
+                Placement::Straight { points }
             }
         }
+        (Placement::Neutral, RoadMode::Curve) => {
+            if buttons.just_pressed(MouseButton::Left) {
+                split_chain_at(&mut network, snapped);
+                Placement::CurveStart { p0: snapped }
+            } else {
+                Placement::Neutral
+            }
+        }
+        (Placement::CurveStart { p0 }, RoadMode::Curve) => {
+            if buttons.just_pressed(MouseButton::Left) {
+                Placement::Curve { p0, p1: snapped }
+            } else if buttons.just_pressed(MouseButton::Right) {
+                Placement::Neutral
+            } else {
+                Placement::CurveStart { p0 }
+            }
+        }
+        (Placement::Curve { p0, p1 }, RoadMode::Curve) => {
+            if buttons.just_pressed(MouseButton::Left) {
+                network
+                    .chains
+                    .push(sample_quadratic_bezier(p0, p1, snapped));
+                rebuild_road_mesh(&network, &[], &mut meshes, &mut road_mesh_q);
+                Placement::Neutral
+            } else if buttons.just_pressed(MouseButton::Right) {
+                Placement::Neutral
+            } else {
+                Placement::Curve { p0, p1 }
+            }
+        }
+        // Mode switched mid-placement (shouldn't happen — C only toggles in
+        // Neutral), so drop back to neutral defensively.
+        _ => Placement::Neutral,
     };
 
     *placement = new_state;
+}
+
+/// Rebuilds the preview mesh from `polyline` and shows/hides it.
+fn update_preview(
+    assets: &RoadAssets,
+    meshes: &mut Assets<Mesh>,
+    visibility_q: &mut Query<&mut Visibility, With<PreviewRoad>>,
+    polyline: &[Vec2],
+) {
+    let Ok(mut vis) = visibility_q.single_mut() else {
+        return;
+    };
+    if polyline.len() >= 2 {
+        *vis = Visibility::Visible;
+        if let Some(mut mesh) = meshes.get_mut(&assets.preview_handle) {
+            *mesh = tessellate_chains(&[polyline]);
+        }
+    } else {
+        *vis = Visibility::Hidden;
+    }
 }
 
 /// Rebuilds the merged road mesh from the finalized chains plus the active chain.
@@ -292,28 +367,26 @@ fn rebuild_road_mesh(
     network: &RoadNetwork,
     active: &[Vec2],
     meshes: &mut Assets<Mesh>,
-    road_mesh_q: &mut Query<&mut Mesh3d, (With<RoadMeshMarker>, Without<CursorMarker>)>,
+    road_mesh_q: &mut Query<&mut Mesh3d, With<RoadMeshMarker>>,
 ) {
-    let mesh = tessellate_roads(network, active);
-    let handle = meshes.add(mesh);
+    let mut chains: Vec<&[Vec2]> = network.chains.iter().map(|c| c.as_slice()).collect();
+    if active.len() >= 2 {
+        chains.push(active);
+    }
+    let handle = meshes.add(tessellate_chains(&chains));
     if let Ok(mut mesh3d) = road_mesh_q.single_mut() {
         *mesh3d = Mesh3d(handle);
     }
 }
 
 /// Strokes every chain into one flat triangle mesh (round joins + caps).
-fn tessellate_roads(network: &RoadNetwork, active: &[Vec2]) -> Mesh {
+fn tessellate_chains(chains: &[&[Vec2]]) -> Mesh {
     let mut geometry: VertexBuffers<Point, u32> = VertexBuffers::new();
     let mut tessellator = StrokeTessellator::new();
     let options = StrokeOptions::tolerance(0.05)
         .with_line_width(ROAD_WIDTH)
         .with_line_join(LineJoin::Round)
         .with_line_cap(LineCap::Round);
-
-    let mut chains: Vec<&[Vec2]> = network.chains.iter().map(|c| c.as_slice()).collect();
-    if active.len() >= 2 {
-        chains.push(active);
-    }
 
     for chain in chains {
         if chain.len() < 2 {
@@ -346,6 +419,21 @@ fn tessellate_roads(network: &RoadNetwork, active: &[Vec2]) -> Mesh {
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_indices(Indices::U32(geometry.indices));
     mesh
+}
+
+/// Samples a quadratic Bezier `p0..p1..p2` into a polyline (adaptive density).
+fn sample_quadratic_bezier(p0: Vec2, p1: Vec2, p2: Vec2) -> Vec<Vec2> {
+    // Rough arc-length bound via the control polygon; ~4 samples per road width.
+    let approx_len = p0.distance(p1) + p1.distance(p2);
+    let segments = ((approx_len / (ROAD_WIDTH * 0.25)).ceil() as usize).clamp(4, 64);
+
+    let mut pts = Vec::with_capacity(segments + 1);
+    for i in 0..=segments {
+        let t = i as f32 / segments as f32;
+        let u = 1.0 - t;
+        pts.push(u * u * p0 + 2.0 * u * t * p1 + t * t * p2);
+    }
+    pts
 }
 
 /// Intersects a world-space ray with the y=0 plane, returning the `(x, z)` point.
@@ -412,33 +500,4 @@ fn closest_point_param(p: Vec2, a: Vec2, b: Vec2) -> f32 {
         return 0.0;
     }
     ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0)
-}
-
-/// Orients `tf` as a flat road strip running from `start` to `end`.
-fn set_road_transform(tf: &mut Transform, start: Vec2, end: Vec2) {
-    let dir = end - start;
-    let length = dir.length();
-    let midpoint = (start + end) * 0.5;
-    // Align the strip's local +X with the world (dx, dz) direction, after laying
-    // it flat (local +Z normal -> +Y up).
-    let yaw = (-dir.y).atan2(dir.x);
-    *tf = Transform::from_translation(Vec3::new(midpoint.x, ROAD_Y, midpoint.y))
-        .with_rotation(
-            Quat::from_rotation_y(yaw) * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
-        )
-        .with_scale(Vec3::new(length, 1.0, 1.0));
-}
-
-/// Spawns the translucent preview road and returns its entity.
-fn spawn_preview(commands: &mut Commands, assets: &RoadAssets, start: Vec2, end: Vec2) -> Entity {
-    let mut tf = Transform::default();
-    set_road_transform(&mut tf, start, end);
-    commands
-        .spawn((
-            Mesh3d(assets.preview_mesh.clone()),
-            MeshMaterial3d(assets.road_preview.clone()),
-            PreviewRoad,
-            tf,
-        ))
-        .id()
 }

@@ -37,10 +37,12 @@ kept in sync as new gotchas are found). The traps most likely to waste time:
   mesh**, giving consistent road width at any turn angle and clean T-junctions
   and crossings. Starting a road on another road's interior splits that chain at
   the junction (a T-junction node).
-- Placement: the cursor (flat circle + opaque ring) snaps to roads; left-click
-  starts a chain, each further left-click commits a segment and chains, and
-  right-click finalizes. `i_overlay` union is deferred until roads need
-  per-road colors/zoning (opaque same-color overlap is visually correct now).
+- Two placement modes (toggle `C`): **straight** (click-to-start, left-click
+  commits-and-chains, right-click finalizes) and **curve** (three clicks = start,
+  control point, end — a quadratic Bezier sampled into a polyline). The preview
+  is a tessellated ribbon rebuilt each frame into one reused mesh handle.
+- `i_overlay` union is deferred until roads need per-road colors/zoning (opaque
+  same-color overlap is visually correct now).
 - Camera is a movable **orthographic** rig (Q/E rotate 90° animated, WASD pan,
   Shift = faster pan, scroll zoom, 45° corner-on yaw) — see `CameraRig` /
   `update_camera` in `src/main.rs`.

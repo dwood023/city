@@ -79,6 +79,9 @@ const CONTROL_Y: f32 = 0.04;
 /// Radius of the curve control-point marker.
 const CONTROL_POINT_RADIUS: f32 = 0.35;
 
+/// Stroke width of the curve control-point ring outline.
+const CONTROL_POINT_STROKE: f32 = 0.08;
+
 /// Color of the curve guide lines and control point (light blue).
 const GUIDE_RGB: (u8, u8, u8) = (130, 200, 255);
 
@@ -303,7 +306,10 @@ pub(crate) fn setup_roads(
     ));
     let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
     commands.spawn((
-        Mesh3d(meshes.add(Mesh::from(Circle::new(CONTROL_POINT_RADIUS)))),
+        Mesh3d(meshes.add(Mesh::from(Annulus::new(
+            CONTROL_POINT_RADIUS - CONTROL_POINT_STROKE,
+            CONTROL_POINT_RADIUS,
+        )))),
         MeshMaterial3d(guide_material),
         ControlPoint,
         Transform::from_xyz(0.0, CONTROL_Y, 0.0).with_rotation(flat),
@@ -559,10 +565,10 @@ pub(crate) fn road_placement_system(
                 *vis = Visibility::Visible;
             }
             if let Some(mut mesh) = meshes.get_mut(&assets.guide_handle) {
-                let line0 = [*p0, *p1];
-                let line1 = [*p1, snapped];
+                let [e0, e1] = guide_line_edges(*p0, *p1);
+                let [e2, e3] = guide_line_edges(*p1, snapped);
                 *mesh = tessellate_chains_at(
-                    &[line0.as_slice(), line1.as_slice()],
+                    &[e0.as_slice(), e1.as_slice(), e2.as_slice(), e3.as_slice()],
                     GUIDE_LINE_WIDTH,
                     GUIDE_Y,
                 );
@@ -962,6 +968,22 @@ fn current_segment_angle(placement: &Placement, snapped: Vec2) -> f32 {
     } else {
         deg
     }
+}
+
+/// The two edge lines of a "hollow road" guide for segment `[a, b]` (offset by
+/// half the road width on each side), so guides read as an outline, not a road.
+fn guide_line_edges(a: Vec2, b: Vec2) -> [[Vec2; 2]; 2] {
+    let dir = b - a;
+    let len = dir.length();
+    if len < 1e-6 {
+        return [[a, b], [a, b]];
+    }
+    let perp = Vec2::new(-dir.y, dir.x) / len;
+    let half = ROAD_WIDTH * 0.5;
+    [
+        [a + perp * half, b + perp * half],
+        [a - perp * half, b - perp * half],
+    ]
 }
 
 /// Intersects a world-space ray with the y=0 plane, returning the `(x, z)` point.

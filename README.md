@@ -42,9 +42,10 @@ preserves the start point and keeps any confirmed straight road segments.
   its end. Right-click finalizes.
 - **Curve**: left-click sets the start, a second left-click sets the control
   point, and a third left-click confirms the end — a quadratic Bezier curve.
-  The control point stays marked, with translucent guide lines to the start and
-  end points (the bezier control polygon). Consecutive curves chain from the
-  previous one's end (right-click to stop).
+  The control point is shown as an **outlined circle**, with the road drawn as a
+  **hollow outline** to it (the bezier control polygon), visually distinct from
+  the filled road. Consecutive curves chain from the previous one's end
+  (right-click to stop).
 
 The cursor is a translucent gray circle with an opaque ring stroke. Two
 independent snapping toggles (like Cities: Skylines) affect it: **snap to

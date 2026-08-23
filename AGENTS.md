@@ -43,8 +43,8 @@ kept in sync as new gotchas are found). The traps most likely to waste time:
   curves chain from the previous end. Switching modes preserves the start point
   and finalizes any confirmed straight segments (they don't disappear). The
   preview is a tessellated ribbon rebuilt each frame into one reused mesh handle;
-  the curve's control point and translucent guide lines (control polygon) are
-  shown while placing.
+  the curve's control point is an outlined circle and its guide lines are drawn
+  as hollow road outlines (the control polygon) while placing.
 - Independent snapping toggles (like CS): **snap to roads** (`R`) and **snap to
   angles** (`G`, constrains straight segments to 90° multiples, `ANGLE_SNAP_STEP`).
 - **Placement guards** (preview + cursor turn red when blocked): segments too

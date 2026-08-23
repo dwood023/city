@@ -33,6 +33,10 @@ const ROAD_WIDTH: f32 = 1.0;
 /// Height of the flat road mesh above the ground (avoids z-fighting).
 const ROAD_Y: f32 = 0.01;
 
+/// Height of the preview ribbon above the road plane, so a blocked (red) or
+/// in-progress preview never z-fights the committed roads beneath it.
+const PREVIEW_Y: f32 = 0.013;
+
 /// Height of the cursor fill circle above the ground.
 const CURSOR_Y: f32 = 0.02;
 
@@ -577,7 +581,7 @@ fn update_preview(
     if polyline.len() >= 2 {
         *vis = Visibility::Visible;
         if let Some(mut mesh) = meshes.get_mut(&assets.preview_handle) {
-            *mesh = tessellate_chains(&[polyline]);
+            *mesh = tessellate_chains_at(&[polyline], ROAD_WIDTH, PREVIEW_Y);
         }
     } else {
         *vis = Visibility::Hidden;

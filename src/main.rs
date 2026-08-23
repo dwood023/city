@@ -186,13 +186,18 @@ const CAMERA_DISTANCE: f32 = 200.0;
 const ROTATE_EASE: f32 = 8.0;
 
 /// Pan speed in world units per second at zoom 1.0 (scales with zoom).
-const PAN_SPEED: f32 = 25.0;
+const PAN_SPEED: f32 = 60.0;
+
+/// Multiplier applied to pan speed while Shift is held.
+const SHIFT_PAN_MULTIPLIER: f32 = 3.0;
 
 /// Multiplicative zoom amount per scroll-wheel notch.
 const ZOOM_STEP: f32 = 0.1;
 
-const ZOOM_MIN: f32 = 0.2;
-const ZOOM_MAX: f32 = 6.0;
+/// Zoom clamps: 1.0 is the default whole-city framing; these bound how far in
+/// and out the camera can go (`base_width / zoom` is the visible width).
+const ZOOM_MIN: f32 = 0.5;
+const ZOOM_MAX: f32 = 4.0;
 
 /// Where the camera sits for a given focus point and yaw.
 fn camera_position(focus: Vec3, yaw: f32) -> Vec3 {
@@ -251,7 +256,7 @@ fn update_camera(
     // Zoom: scroll up = zoom in.
     let scroll_y: f32 = scroll.read().map(|e| e.y).sum();
     if scroll_y != 0.0 {
-        rig.zoom = (rig.zoom * (1.0 - scroll_y * ZOOM_STEP)).clamp(ZOOM_MIN, ZOOM_MAX);
+        rig.zoom = (rig.zoom * (1.0 + scroll_y * ZOOM_STEP)).clamp(ZOOM_MIN, ZOOM_MAX);
     }
 
     // Ease the yaw toward its target (frame-rate independent).
@@ -278,7 +283,10 @@ fn update_camera(
     if keys.pressed(KeyCode::KeyA) {
         pan.x -= 1.0;
     }
-    let pan_speed = PAN_SPEED / rig.zoom;
+    let mut pan_speed = PAN_SPEED / rig.zoom;
+    if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
+        pan_speed *= SHIFT_PAN_MULTIPLIER;
+    }
     rig.focus += (right * pan.x + away * pan.y) * pan_speed * dt;
 
     // Apply the camera transform.

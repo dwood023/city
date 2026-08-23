@@ -42,6 +42,9 @@ const CURSOR_STROKE_Y: f32 = 0.03;
 /// Clicking within this distance of an existing road snaps the cursor to it.
 const ROAD_SNAP_DISTANCE: f32 = ROAD_WIDTH * 0.6;
 
+/// Step size for angle snapping (90° = cardinal directions).
+const ANGLE_SNAP_STEP: f32 = std::f32::consts::FRAC_PI_2;
+
 /// Tolerance for treating two ground points as coincident (join detection).
 const JOIN_EPSILON: f32 = 1e-3;
 
@@ -79,6 +82,24 @@ pub(crate) enum RoadMode {
     #[default]
     Straight,
     Curve,
+}
+
+/// Independent snapping toggles (like Cities: Skylines — non-exclusive).
+#[derive(Resource)]
+pub(crate) struct SnapSettings {
+    /// Snap the cursor onto existing roads when close.
+    snap_to_roads: bool,
+    /// Snap a straight segment's direction to multiples of [`ANGLE_SNAP_STEP`].
+    snap_to_angles: bool,
+}
+
+impl Default for SnapSettings {
+    fn default() -> Self {
+        Self {
+            snap_to_roads: true,
+            snap_to_angles: false,
+        }
+    }
 }
 
 /// Placement interaction state.
@@ -151,6 +172,7 @@ pub(crate) fn setup_roads(
     });
     commands.insert_resource(RoadNetwork::default());
     commands.insert_resource(RoadMode::default());
+    commands.insert_resource(SnapSettings::default());
     commands.insert_resource(Placement::default());
 
     // Ground plane (a large flat quad in the XZ plane at y = 0).
@@ -213,6 +235,7 @@ pub(crate) fn setup_roads(
 pub(crate) fn road_placement_system(
     assets: Res<RoadAssets>,
     mut mode: ResMut<RoadMode>,
+    mut snap: ResMut<SnapSettings>,
     mut placement: ResMut<Placement>,
     mut network: ResMut<RoadNetwork>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -240,21 +263,42 @@ pub(crate) fn road_placement_system(
         return;
     };
 
-    // Snap the cursor onto an existing road when close, and position the cursor
-    // circle at the snapped point.
-    let snapped = snap_to_roads(ground, &network);
-    if let Ok(mut tf) = cursor_q.single_mut() {
-        tf.translation = Vec3::new(snapped.x, 0.0, snapped.y);
+    // Toggle snapping options and mode (only while neutral, so nothing disrupts
+    // an in-progress placement).
+    if matches!(*placement, Placement::Neutral) {
+        if keys.just_pressed(KeyCode::KeyC) {
+            *mode = match *mode {
+                RoadMode::Straight => RoadMode::Curve,
+                RoadMode::Curve => RoadMode::Straight,
+            };
+            info!("road mode: {:?}", *mode);
+        }
+        if keys.just_pressed(KeyCode::KeyR) {
+            snap.snap_to_roads = !snap.snap_to_roads;
+            info!("snap to roads: {}", snap.snap_to_roads);
+        }
+        if keys.just_pressed(KeyCode::KeyG) {
+            snap.snap_to_angles = !snap.snap_to_angles;
+            info!("snap to angles: {}", snap.snap_to_angles);
+        }
     }
 
-    // Toggle straight/curve mode (only while neutral, so it never disrupts an
-    // in-progress placement).
-    if keys.just_pressed(KeyCode::KeyC) && matches!(*placement, Placement::Neutral) {
-        *mode = match *mode {
-            RoadMode::Straight => RoadMode::Curve,
-            RoadMode::Curve => RoadMode::Straight,
-        };
-        info!("road mode: {:?}", *mode);
+    // Snap the cursor: first to an existing road (if enabled), then constrain a
+    // straight segment's direction to a snapped angle (if enabled).
+    let road_snapped = if snap.snap_to_roads {
+        snap_to_roads(ground, &network)
+    } else {
+        ground
+    };
+    let snapped = match &*placement {
+        Placement::Straight { points } if snap.snap_to_angles => points
+            .last()
+            .map(|last| snap_angle(*last, road_snapped))
+            .unwrap_or(road_snapped),
+        _ => road_snapped,
+    };
+    if let Ok(mut tf) = cursor_q.single_mut() {
+        tf.translation = Vec3::new(snapped.x, 0.0, snapped.y);
     }
 
     // Compute the preview polyline from the current state.
@@ -434,6 +478,20 @@ fn sample_quadratic_bezier(p0: Vec2, p1: Vec2, p2: Vec2) -> Vec<Vec2> {
         pts.push(u * u * p0 + 2.0 * u * t * p1 + t * t * p2);
     }
     pts
+}
+
+/// Snaps `end` so the segment `start..end` lies on a multiple of
+/// [`ANGLE_SNAP_STEP`] (its direction is constrained, length tracks the cursor).
+fn snap_angle(start: Vec2, end: Vec2) -> Vec2 {
+    let dir = end - start;
+    if dir.length_squared() < 1e-8 {
+        return end;
+    }
+    let angle = dir.y.atan2(dir.x);
+    let snapped_angle = (angle / ANGLE_SNAP_STEP).round() * ANGLE_SNAP_STEP;
+    let snapped_dir = Vec2::new(snapped_angle.cos(), snapped_angle.sin());
+    let length = dir.dot(snapped_dir);
+    start + snapped_dir * length.max(0.0)
 }
 
 /// Intersects a world-space ray with the y=0 plane, returning the `(x, z)` point.

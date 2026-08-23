@@ -25,6 +25,8 @@ cargo run -- --show-fps  # with a live FPS / frame-time / entity-count overlay
 | `Q` / `E` | Rotate camera 90° (animated) |
 | `Scroll wheel` | Zoom in / out |
 | `C` | Toggle straight / curve road mode |
+| `R` | Toggle snap to existing roads |
+| `G` | Toggle snap to angles (90°) |
 | `Left click` | Place road (see below) |
 | `Right click` | Cancel / finalize the in-progress road |
 
@@ -39,10 +41,12 @@ Toggle between **straight** and **curve** mode with `C`.
 - **Curve**: left-click sets the start, a second left-click sets the control
   point, and a third left-click confirms the end — a quadratic Bezier curve.
 
-The cursor is a translucent gray circle with an opaque ring stroke, snapping to
-existing roads when close. Roads are rendered as one tessellated mesh with
-**round joins and caps** (via [lyon](https://lib.rs/crates/lyon)), so width stays
-consistent at any turn angle and junctions/crossings join cleanly.
+The cursor is a translucent gray circle with an opaque ring stroke. Two
+independent snapping toggles (like Cities: Skylines) affect it: **snap to
+existing roads** (`R`) and **snap to angles** (`G`, constrains straight segments
+to 90° multiples). Roads are rendered as one tessellated mesh with **round joins
+and caps** (via [lyon](https://lib.rs/crates/lyon)), so width stays consistent at
+any turn angle and junctions/crossings join cleanly.
 
 ## CLI options (argh)
 

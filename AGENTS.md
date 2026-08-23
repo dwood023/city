@@ -41,6 +41,8 @@ kept in sync as new gotchas are found). The traps most likely to waste time:
   commits-and-chains, right-click finalizes) and **curve** (three clicks = start,
   control point, end — a quadratic Bezier sampled into a polyline). The preview
   is a tessellated ribbon rebuilt each frame into one reused mesh handle.
+- Independent snapping toggles (like CS): **snap to roads** (`R`) and **snap to
+  angles** (`G`, constrains straight segments to 90° multiples, `ANGLE_SNAP_STEP`).
 - `i_overlay` union is deferred until roads need per-road colors/zoning (opaque
   same-color overlap is visually correct now).
 - Camera is a movable **orthographic** rig (Q/E rotate 90° animated, WASD pan,

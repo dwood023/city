@@ -330,10 +330,24 @@ pub(crate) fn road_placement_system(
     buttons: Res<ButtonInput<MouseButton>>,
     camera_q: Query<(&Camera, &GlobalTransform)>,
     window_q: Query<&Window, With<PrimaryWindow>>,
-    mut cursor_q: Query<&mut Transform, With<CursorMarker>>,
-    mut preview_vis_q: Query<&mut Visibility, With<PreviewRoad>>,
-    mut guide_vis_q: Query<&mut Visibility, With<GuideLines>>,
-    mut control_q: Query<(&mut Transform, &mut Visibility), With<ControlPoint>>,
+    mut cursor_q: Query<&mut Transform, (With<CursorMarker>, Without<ControlPoint>)>,
+    mut preview_vis_q: Query<
+        &mut Visibility,
+        (With<PreviewRoad>, Without<GuideLines>, Without<ControlPoint>),
+    >,
+    mut guide_vis_q: Query<
+        &mut Visibility,
+        (With<GuideLines>, Without<PreviewRoad>, Without<ControlPoint>),
+    >,
+    mut control_q: Query<
+        (&mut Transform, &mut Visibility),
+        (
+            With<ControlPoint>,
+            Without<PreviewRoad>,
+            Without<GuideLines>,
+            Without<CursorMarker>,
+        ),
+    >,
     mut road_mesh_q: Query<&mut Mesh3d, With<RoadMeshMarker>>,
 ) {
     let Ok((camera, camera_transform)) = camera_q.single() else {
@@ -510,7 +524,10 @@ pub(crate) fn road_placement_system(
 fn update_preview(
     assets: &RoadAssets,
     meshes: &mut Assets<Mesh>,
-    visibility_q: &mut Query<&mut Visibility, With<PreviewRoad>>,
+    visibility_q: &mut Query<
+        &mut Visibility,
+        (With<PreviewRoad>, Without<GuideLines>, Without<ControlPoint>),
+    >,
     polyline: &[Vec2],
 ) {
     let Ok(mut vis) = visibility_q.single_mut() else {

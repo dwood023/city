@@ -68,7 +68,7 @@ const CURSOR_STROKE_RGB: (u8, u8, u8) = (255, 255, 255);
 const CURSOR_STROKE_WIDTH: f32 = 0.06;
 
 /// Width of the translucent curve guide lines (the bezier control polygon).
-const GUIDE_LINE_WIDTH: f32 = ROAD_WIDTH * 0.2;
+const GUIDE_LINE_WIDTH: f32 = ROAD_WIDTH * 0.08;
 
 /// Height of the curve guide lines above the ground (avoids z-fighting roads).
 const GUIDE_Y: f32 = 0.03;
@@ -80,7 +80,7 @@ const CONTROL_Y: f32 = 0.04;
 const CONTROL_POINT_RADIUS: f32 = 0.35;
 
 /// Stroke width of the curve control-point ring outline.
-const CONTROL_POINT_STROKE: f32 = 0.08;
+const CONTROL_POINT_STROKE: f32 = 0.05;
 
 /// Color of the curve guide lines and control point (light blue).
 const GUIDE_RGB: (u8, u8, u8) = (130, 200, 255);
@@ -251,7 +251,7 @@ pub(crate) fn setup_roads(
     let cursor_fill = solid_material(&mut materials, ROAD_RGB, 0.4);
     let cursor_stroke = solid_material(&mut materials, CURSOR_STROKE_RGB, 1.0);
     let cursor_fill_blocked = solid_material(&mut materials, BLOCKED_RGB, 0.4);
-    let guide_material = solid_material(&mut materials, GUIDE_RGB, 0.75);
+    let guide_material = solid_material(&mut materials, GUIDE_RGB, 0.5);
     let preview_blocked = solid_material(&mut materials, BLOCKED_RGB, 0.6);
 
     let preview_handle = meshes.add(tessellate_chains(&[]));

@@ -1,1 +1,5 @@
 /target
+# Runtime-downloaded Kenney assets (fetched over HTTPS on first run and cached locally)
+/.web-asset-cache
+# Local build diagnostics
+/build.log

@@ -52,6 +52,11 @@ to 90° multiples). Roads are rendered as one tessellated mesh with **round join
 and caps** (via [lyon](https://lib.rs/crates/lyon)), so width stays consistent at
 any turn angle and junctions/crossings join cleanly.
 
+Invalid placements are blocked and the preview turns **red**: a segment that is
+too short, overlaps an existing road, or runs too close to a parallel road (or
+at a near-collinear angle to one it branches from) is refused, keeping roads
+looking reasonable even in messy builds.
+
 ## CLI options (argh)
 
 | Flag | Default | Meaning |

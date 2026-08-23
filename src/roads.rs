@@ -78,6 +78,21 @@ const CONTROL_POINT_RADIUS: f32 = 0.35;
 /// Color of the curve guide lines and control point (light blue).
 const GUIDE_RGB: (u8, u8, u8) = (130, 200, 255);
 
+/// Minimum length for a valid road segment (shorter segments are rejected).
+const MIN_ROAD_LENGTH: f32 = ROAD_WIDTH * 2.0;
+
+/// Minimum centerline spacing between near-parallel roads.
+const MIN_CLEARANCE: f32 = ROAD_WIDTH * 3.0;
+
+/// Cosine of the max angle for two segments to be treated as "parallel" (~20°).
+const PARALLEL_DOT: f32 = 0.94;
+
+/// Overlap length (along the shared direction) that counts as "running alongside".
+const MIN_OVERLAP: f32 = ROAD_WIDTH * 0.5;
+
+/// Color of the blocked-preview ribbon (red).
+const BLOCKED_RGB: (u8, u8, u8) = (220, 60, 60);
+
 /// Shared meshes/materials for the road mechanic.
 #[derive(Resource)]
 pub(crate) struct RoadAssets {
@@ -85,6 +100,10 @@ pub(crate) struct RoadAssets {
     preview_handle: Handle<Mesh>,
     /// Single reused mesh handle for the curve guide-line ribbon.
     guide_handle: Handle<Mesh>,
+    /// Normal (valid) preview material.
+    preview_material: Handle<StandardMaterial>,
+    /// Red preview material shown when a placement would be blocked.
+    preview_blocked: Handle<StandardMaterial>,
 }
 
 /// The committed road network: a set of polylines (`(x, z)` points).
@@ -194,6 +213,7 @@ pub(crate) fn setup_roads(
     let cursor_fill = solid_material(&mut materials, ROAD_RGB, 0.4);
     let cursor_stroke = solid_material(&mut materials, CURSOR_STROKE_RGB, 1.0);
     let guide_material = solid_material(&mut materials, GUIDE_RGB, 0.75);
+    let preview_blocked = solid_material(&mut materials, BLOCKED_RGB, 0.6);
 
     let preview_handle = meshes.add(tessellate_chains(&[]));
     let guide_handle = meshes.add(tessellate_chains_at(&[], GUIDE_LINE_WIDTH, GUIDE_Y));
@@ -201,6 +221,8 @@ pub(crate) fn setup_roads(
     commands.insert_resource(RoadAssets {
         preview_handle: preview_handle.clone(),
         guide_handle: guide_handle.clone(),
+        preview_material: road_preview.clone(),
+        preview_blocked: preview_blocked.clone(),
     });
     commands.insert_resource(RoadNetwork::default());
     commands.insert_resource(RoadMode::default());
@@ -335,6 +357,7 @@ pub(crate) fn road_placement_system(
         &mut Visibility,
         (With<PreviewRoad>, Without<GuideLines>, Without<ControlPoint>),
     >,
+    mut preview_mat_q: Query<&mut MeshMaterial3d<StandardMaterial>, With<PreviewRoad>>,
     mut guide_vis_q: Query<
         &mut Visibility,
         (With<GuideLines>, Without<PreviewRoad>, Without<ControlPoint>),
@@ -417,6 +440,16 @@ pub(crate) fn road_placement_system(
     };
     update_preview(&assets, &mut meshes, &mut preview_vis_q, &preview_polyline);
 
+    // Swap the preview material to red when the current placement is blocked.
+    let blocked = placement_is_blocked(&*placement, snapped, &network);
+    if let Ok(mut mat) = preview_mat_q.single_mut() {
+        *mat = MeshMaterial3d(if blocked {
+            assets.preview_blocked.clone()
+        } else {
+            assets.preview_material.clone()
+        });
+    }
+
     // Show the curve's control point and guide lines (the control polygon)
     // once the control point is placed; hide them otherwise.
     match &*placement {
@@ -463,14 +496,14 @@ pub(crate) fn road_placement_system(
         }
         (Placement::Straight { mut points }, RoadMode::Straight) => {
             if buttons.just_pressed(MouseButton::Left) {
-                if points
+                let ok = points
                     .last()
                     .copied()
-                    .is_none_or(|p| p.distance(snapped) > ROAD_WIDTH * 0.2)
-                {
+                    .is_some_and(|last| !segment_is_blocked(last, snapped, &network, &points));
+                if ok {
                     points.push(snapped);
+                    rebuild_road_mesh(&network, &points, &mut meshes, &mut road_mesh_q);
                 }
-                rebuild_road_mesh(&network, &points, &mut meshes, &mut road_mesh_q);
                 Placement::Straight { points }
             } else if buttons.just_pressed(MouseButton::Right) {
                 if points.len() >= 2 {
@@ -501,12 +534,19 @@ pub(crate) fn road_placement_system(
         }
         (Placement::Curve { p0, p1 }, RoadMode::Curve) => {
             if buttons.just_pressed(MouseButton::Left) {
-                network
-                    .chains
-                    .push(sample_quadratic_bezier(p0, p1, snapped));
-                rebuild_road_mesh(&network, &[], &mut meshes, &mut road_mesh_q);
-                // Chain the next curve from this one's end point (no re-start).
-                Placement::CurveStart { p0: snapped }
+                let poly = sample_quadratic_bezier(p0, p1, snapped);
+                let blocked = poly_total_length(&poly) < MIN_ROAD_LENGTH
+                    || poly
+                        .windows(2)
+                        .any(|w| is_blocked_overlap(w[0], w[1], &network, &[]));
+                if blocked {
+                    Placement::Curve { p0, p1 }
+                } else {
+                    network.chains.push(poly);
+                    rebuild_road_mesh(&network, &[], &mut meshes, &mut road_mesh_q);
+                    // Chain the next curve from this one's end point (no re-start).
+                    Placement::CurveStart { p0: snapped }
+                }
             } else if buttons.just_pressed(MouseButton::Right) {
                 Placement::Neutral
             } else {
@@ -637,6 +677,132 @@ fn snap_angle(start: Vec2, end: Vec2) -> Vec2 {
     let snapped_dir = Vec2::new(snapped_angle.cos(), snapped_angle.sin());
     let length = dir.dot(snapped_dir);
     start + snapped_dir * length.max(0.0)
+}
+
+// --- road-placement guards ---------------------------------------------------
+
+/// Minimum distance from point `p` to segment `[a, b]`.
+fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
+    let ab = b - a;
+    let len_sq = ab.length_squared();
+    if len_sq < 1e-8 {
+        return p.distance(a);
+    }
+    let t = ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0);
+    p.distance(a + ab * t)
+}
+
+/// Whether segments `[a, b]` and `[c, d]` cross (properly intersect).
+fn segments_intersect(a: Vec2, b: Vec2, c: Vec2, d: Vec2) -> bool {
+    let o1 = (b - a).perp_dot(c - a);
+    let o2 = (b - a).perp_dot(d - a);
+    let o3 = (d - c).perp_dot(a - c);
+    let o4 = (d - c).perp_dot(b - c);
+    (o1 * o2 < 0.0) && (o3 * o4 < 0.0)
+}
+
+/// Minimum distance between two segments `[a, b]` and `[c, d]` (handles the
+/// parallel interior–interior case via the perpendicular distance).
+fn segment_segment_distance(a: Vec2, b: Vec2, c: Vec2, d: Vec2) -> f32 {
+    if segments_intersect(a, b, c, d) {
+        return 0.0;
+    }
+    let mut min_d = f32::MAX;
+    min_d = min_d.min(point_segment_distance(a, c, d));
+    min_d = min_d.min(point_segment_distance(b, c, d));
+    min_d = min_d.min(point_segment_distance(c, a, b));
+    min_d = min_d.min(point_segment_distance(d, a, b));
+    // Parallel case: perpendicular distance if the projections overlap.
+    let ab = b - a;
+    let cross = ab.perp_dot(d - c);
+    if cross.abs() < 1e-6 {
+        let len_ab = ab.length();
+        if len_ab > 1e-6 {
+            let perp = (ab.perp_dot(c - a)).abs() / len_ab;
+            let dir = ab / len_ab;
+            let (lo1, hi1) = (a.dot(dir).min(b.dot(dir)), a.dot(dir).max(b.dot(dir)));
+            let (lo2, hi2) = (c.dot(dir).min(d.dot(dir)), c.dot(dir).max(d.dot(dir)));
+            if lo1 <= hi2 && lo2 <= hi1 {
+                min_d = min_d.min(perp);
+            }
+        }
+    }
+    min_d
+}
+
+/// Total length of a polyline.
+fn poly_total_length(poly: &[Vec2]) -> f32 {
+    poly.windows(2).map(|w| w[0].distance(w[1])).sum()
+}
+
+/// True if segment `[a, b]` runs alongside (near-parallel + close + overlapping)
+/// the existing segment `[c, d]`. This catches overlap-on-top, parallel roads too
+/// close, and near-collinear branches — while allowing crossings and shared
+/// endpoints (legitimate connections).
+fn segment_close_parallel(a: Vec2, b: Vec2, c: Vec2, d: Vec2) -> bool {
+    let ab = b - a;
+    let cd = d - c;
+    let len_a = ab.length();
+    let len_c = cd.length();
+    if len_a < 1e-6 || len_c < 1e-6 {
+        return false;
+    }
+    let dir_a = ab / len_a;
+    let dir_c = cd / len_c;
+    if dir_a.dot(dir_c).abs() < PARALLEL_DOT {
+        return false; // not near-parallel (a crossing or angled branch is allowed)
+    }
+    if segment_segment_distance(a, b, c, d) >= MIN_CLEARANCE {
+        return false; // not close enough to matter
+    }
+    let (pa, pb) = (a.dot(dir_a), b.dot(dir_a));
+    let (pc, pd) = (c.dot(dir_a), d.dot(dir_a));
+    let overlap = (pa.max(pb).min(pc.max(pd)) - pa.min(pb).max(pc.min(pd))).max(0.0);
+    overlap > MIN_OVERLAP
+}
+
+/// True if segment `[a, b]` overlaps / runs alongside any existing road.
+fn is_blocked_overlap(a: Vec2, b: Vec2, network: &RoadNetwork, active: &[Vec2]) -> bool {
+    for chain in network
+        .chains
+        .iter()
+        .map(|c| c.as_slice())
+        .chain(std::iter::once(active))
+    {
+        for i in 0..chain.len().saturating_sub(1) {
+            if segment_close_parallel(a, b, chain[i], chain[i + 1]) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// True if segment `[a, b]` is too short or overlaps an existing road.
+fn segment_is_blocked(a: Vec2, b: Vec2, network: &RoadNetwork, active: &[Vec2]) -> bool {
+    a.distance(b) < MIN_ROAD_LENGTH || is_blocked_overlap(a, b, network, active)
+}
+
+/// Whether the current placement's preview segment would be blocked.
+fn placement_is_blocked(placement: &Placement, snapped: Vec2, network: &RoadNetwork) -> bool {
+    match placement {
+        Placement::Neutral => false,
+        Placement::Straight { points } => {
+            let Some(&a) = points.last() else {
+                return false;
+            };
+            segment_is_blocked(a, snapped, network, points)
+        }
+        Placement::CurveStart { p0 } => segment_is_blocked(*p0, snapped, network, &[]),
+        Placement::Curve { p0, p1 } => {
+            let poly = sample_quadratic_bezier(*p0, *p1, snapped);
+            if poly_total_length(&poly) < MIN_ROAD_LENGTH {
+                return true;
+            }
+            poly.windows(2)
+                .any(|w| is_blocked_overlap(w[0], w[1], network, &[]))
+        }
+    }
 }
 
 /// Intersects a world-space ray with the y=0 plane, returning the `(x, z)` point.

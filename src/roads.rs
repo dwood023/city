@@ -562,8 +562,8 @@ pub(crate) fn road_placement_system(
     // Show the curve's control point and guide lines (the control polygon)
     // once the control point is placed; hide them otherwise.
     match &*placement {
-        // While placing the control point (second click), show its ring at the
-        // cursor and a hollow road outline from the start to it.
+        // While placing the control point (2nd click): ring follows the cursor,
+        // hollow outline from the start to it.
         Placement::CurveStart { p0 } => {
             if let Ok(mut vis) = guide_ctrl.p0().single_mut() {
                 *vis = Visibility::Visible;
@@ -578,6 +578,27 @@ pub(crate) fn road_placement_system(
             }
             if let Ok((mut tf, mut vis)) = guide_ctrl.p1().single_mut() {
                 tf.translation = Vec3::new(snapped.x, CONTROL_Y, snapped.y);
+                *vis = Visibility::Visible;
+            }
+        }
+        // While placing the end point (3rd click): keep the ring at the control
+        // point and the outlines of the full control polygon (start→control and
+        // control→cursor).
+        Placement::Curve { p0, p1 } => {
+            if let Ok(mut vis) = guide_ctrl.p0().single_mut() {
+                *vis = Visibility::Visible;
+            }
+            if let Some(mut mesh) = meshes.get_mut(&assets.guide_handle) {
+                let [e0, e1] = guide_line_edges(*p0, *p1);
+                let [e2, e3] = guide_line_edges(*p1, snapped);
+                *mesh = tessellate_chains_at(
+                    &[e0.as_slice(), e1.as_slice(), e2.as_slice(), e3.as_slice()],
+                    GUIDE_LINE_WIDTH,
+                    GUIDE_Y,
+                );
+            }
+            if let Ok((mut tf, mut vis)) = guide_ctrl.p1().single_mut() {
+                tf.translation = Vec3::new(p1.x, CONTROL_Y, p1.y);
                 *vis = Visibility::Visible;
             }
         }

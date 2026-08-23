@@ -1,0 +1,39 @@
+[package]
+name = "city-builder"
+version = "0.1.0"
+edition = "2024"
+description = "A city builder inspired by Cities: Skylines, built with Bevy. Started from the official bevy_city example (procedurally generated city)."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# Features required by the bevy_city example: loading assets over HTTPS,
+# the free-camera controller, the Feathers UI framework, and the web asset cache.
+bevy = { version = "0.19.1", features = [
+  "https",
+  "free_camera",
+  "bevy_feathers",
+  "web_asset_cache",
+] }
+
+argh = "0.1"
+noise = "0.9.0"
+rand = "0.10.0"
+
+# --- Ultrabook-friendly profiles -------------------------------------------
+#
+# Bevy's official "fast compiles" recommendation. `opt-level = 1` for our own
+# code keeps iterative builds quick, while dependencies (i.e. Bevy itself) are
+# compiled at opt-level 3 so runtime performance stays decent. Dependencies are
+# only compiled once, so the extra first-build time is paid once and amortized
+# over every later build.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# Release profile: keep it snappy for distribution. First release build will be
+# slow on an ultrabook; that's expected.
+[profile.release]
+lto = "thin"
+strip = true

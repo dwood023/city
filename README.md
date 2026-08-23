@@ -15,6 +15,8 @@ standalone crate so we can grow it into a real city builder:
 
 ## Run
 
+Requires **Rust ≥ 1.95** (Bevy 0.19 MSRV). Update your toolchain with `rustup update stable`.
+
 ```sh
 cargo run                # dev build (Bevy deps are compiled at opt-level 3, see Cargo.toml)
 cargo run --release      # much better frame rate, much slower to compile

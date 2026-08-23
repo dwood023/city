@@ -114,7 +114,11 @@ fn main() {
         Startup,
         (scene.spawn(), setup_assets, spawn_city_system).chain(),
     )
-    .add_systems(Update, (simulate_cars, settings_ui.spawn()));
+    .add_systems(Update, simulate_cars);
+
+    // The settings UI spawns once at startup (spawning it every frame would
+    // leak a new UI panel per frame and grind FPS down over time).
+    app.add_systems(Startup, settings_ui.spawn());
 
     if args.pretty {
         app.add_systems(Startup, apply_pretty);

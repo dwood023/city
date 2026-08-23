@@ -39,10 +39,10 @@ kept in sync as new gotchas are found). The traps most likely to waste time:
   the junction (a T-junction node).
 - Two placement modes (toggle `C`): **straight** (click-to-start, left-click
   commits-and-chains, right-click finalizes) and **curve** (three clicks = start,
-  control point, end — a quadratic Bezier sampled into a polyline). The preview
-  is a tessellated ribbon rebuilt each frame into one reused mesh handle; the
-  curve's control point and translucent guide lines (control polygon) are shown
-  while placing.
+  control point, end — a quadratic Bezier sampled into a polyline). Consecutive
+  curves chain from the previous end. The preview is a tessellated ribbon
+  rebuilt each frame into one reused mesh handle; the curve's control point and
+  translucent guide lines (control polygon) are shown while placing.
 - Independent snapping toggles (like CS): **snap to roads** (`R`) and **snap to
   angles** (`G`, constrains straight segments to 90° multiples, `ANGLE_SNAP_STEP`).
 - `i_overlay` union is deferred until roads need per-road colors/zoning (opaque

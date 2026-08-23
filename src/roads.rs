@@ -505,15 +505,16 @@ pub(crate) fn road_placement_system(
                     .chains
                     .push(sample_quadratic_bezier(p0, p1, snapped));
                 rebuild_road_mesh(&network, &[], &mut meshes, &mut road_mesh_q);
-                Placement::Neutral
+                // Chain the next curve from this one's end point (no re-start).
+                Placement::CurveStart { p0: snapped }
             } else if buttons.just_pressed(MouseButton::Right) {
                 Placement::Neutral
             } else {
                 Placement::Curve { p0, p1 }
             }
         }
-        // Mode switched mid-placement (shouldn't happen — C only toggles in
-        // Neutral), so drop back to neutral defensively.
+        // Mode switched mid-placement (C toggles at all times), so drop back to
+        // neutral defensively.
         _ => Placement::Neutral,
     };
 

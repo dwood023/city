@@ -113,6 +113,7 @@ pub fn settings_ui() -> impl Scene {
                          mut commands: Commands,
                          city_root: Single<Entity, With<CityRoot>>,
                          assets: Res<MinimalAssets>,
+                         mut meshes: ResMut<Assets<Mesh>>,
                          args: Res<crate::Args>| {
                             commands.entity(*city_root).despawn();
 
@@ -122,6 +123,7 @@ pub fn settings_ui() -> impl Scene {
                             spawn_city(
                                 &mut commands,
                                 &assets,
+                                &mut meshes,
                                 seed,
                                 args.size,
                                 SpawnConfig::default(),

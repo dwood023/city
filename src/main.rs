@@ -9,7 +9,6 @@
 use argh::FromArgs;
 use bevy::{
     anti_alias::taa::TemporalAntiAliasing,
-    camera::{Exposure, Hdr},
     camera_controller::free_camera::{FreeCamera, FreeCameraPlugin},
     color::palettes::css::WHITE,
     feathers::{dark_theme::create_dark_theme, theme::UiTheme, FeathersPlugins},
@@ -50,9 +49,10 @@ pub struct Args {
     #[argh(option, default = "1080")]
     height: u32,
 
-    /// disable bloom, TAA and other full-screen post effects for a large GPU win
+    /// enable bloom + TAA (off by default; full-screen post effects are the
+    /// biggest GPU cost on integrated graphics)
     #[argh(switch)]
-    low_graphics: bool,
+    pretty: bool,
 
     /// disable the car simulation and cars entirely
     #[argh(switch)]
@@ -89,7 +89,7 @@ fn main() {
                 title: "minimal_city".into(),
                 resolution: WindowResolution::new(args.width, args.height)
                     .with_scale_factor_override(1.0),
-                present_mode: PresentMode::AutoNoVsync,
+                present_mode: PresentMode::AutoVsync,
                 position: WindowPosition::Centered(MonitorSelection::Primary),
                 ..default()
             }),
@@ -116,8 +116,8 @@ fn main() {
     )
     .add_systems(Update, (simulate_cars, settings_ui.spawn()));
 
-    if args.low_graphics {
-        app.add_systems(Startup, apply_low_graphics);
+    if args.pretty {
+        app.add_systems(Startup, apply_pretty);
     }
     if args.show_fps {
         app.add_systems(Startup, diagnostics::spawn_fps_overlay)
@@ -128,29 +128,16 @@ fn main() {
 }
 
 fn scene() -> impl SceneList {
-    bsn_list![camera(), sun()]
+    bsn_list![camera()]
 }
 
 fn camera() -> impl Scene {
     bsn! {
         Camera3d
-        Hdr
         template_value(Transform::from_xyz(15.0, 10.0, 20.0).looking_at(Vec3::ZERO, Vec3::Y))
         FreeCamera
-        Exposure::OVERCAST
         Msaa::Off
-        TemporalAntiAliasing
-        Bloom::NATURAL
         ProfileCameraMarker
-    }
-}
-
-fn sun() -> impl Scene {
-    bsn! {
-        DirectionalLight {
-            illuminance: light_consts::lux::RAW_SUNLIGHT,
-        }
-        template_value(Transform::from_xyz(1.0, 1.0, 1.0).looking_at(Vec3::ZERO, Vec3::Y))
     }
 }
 
@@ -158,14 +145,14 @@ fn sun() -> impl Scene {
 #[derive(Component, Default, Clone)]
 struct ProfileCameraMarker;
 
-/// Removes full-screen post effects from the camera when `--low-graphics`.
-fn apply_low_graphics(
+/// Adds bloom + TAA to the camera when `--pretty`.
+fn apply_pretty(
     mut commands: Commands,
     camera: Query<Entity, (With<ProfileCameraMarker>, With<Camera3d>)>,
 ) {
     for entity in &camera {
-        commands.entity(entity).remove::<Bloom>();
-        commands.entity(entity).remove::<TemporalAntiAliasing>();
+        commands.entity(entity).insert(Bloom::NATURAL);
+        commands.entity(entity).insert(TemporalAntiAliasing::default());
     }
 }
 
@@ -173,11 +160,13 @@ fn apply_low_graphics(
 fn spawn_city_system(
     mut commands: Commands,
     assets: Res<MinimalAssets>,
+    mut meshes: ResMut<Assets<Mesh>>,
     args: Res<Args>,
 ) {
     spawn_city(
         &mut commands,
         &assets,
+        &mut meshes,
         args.seed,
         args.size,
         SpawnConfig {

@@ -1,53 +1,48 @@
-//! Procedural minimalist city: shared colored primitives instead of glTF assets.
+//! Procedural minimalist city: merged meshes instead of per-instance entities.
 //!
-//! All geometry is generated at startup (cubes, cylinders, spheres) and reused
-//! across every instance. Because every building/tree/car of a given type shares
-//! the same mesh and material, Bevy batches them into a tiny number of draw calls
-//! and the GPU never has to hold thousands of separate meshes — the exact problem
-//! the detailed asset version hit (shared-memory thrash on integrated GPUs).
+//! The whole city is built from shared colored primitives. Crucially, all
+//! geometry is *merged* into one mesh per material color at spawn time, so the
+//! entire city is ~16 entities and ~16 draw calls — not thousands of separate
+//! boxes. This is what makes a Mini Motorways-style scene fast on an integrated
+//! GPU: near-zero entity/culling/batching overhead and minimal draw calls.
 
 use bevy::prelude::*;
 use noise::{NoiseFn, OpenSimplex};
 use rand::{rngs::SmallRng, RngExt, SeedableRng};
 
-/// The shared meshes and materials used to build the city. Created once at
-/// startup; every spawned instance references these same handles.
+/// The shared materials used to build the city. Created once at startup.
+/// (Meshes are merged on demand from a unit cube, so no per-type mesh handles
+/// are needed here.)
 #[derive(Resource)]
 pub struct MinimalAssets {
-    // Shared meshes
-    pub cube: Handle<Mesh>,
-    pub cylinder: Handle<Mesh>,
-    // Materials
     pub ground: Handle<StandardMaterial>,
     pub road: Handle<StandardMaterial>,
-    pub trunk: Handle<StandardMaterial>,
     pub canopy: Handle<StandardMaterial>,
     pub fence: Handle<StandardMaterial>,
     pub buildings: Vec<Handle<StandardMaterial>>,
     pub cars: Vec<Handle<StandardMaterial>>,
 }
 
-/// Builds the shared meshes + material palette into a [`MinimalAssets`] resource.
+/// Builds the shared material palette into a [`MinimalAssets`] resource.
 pub fn setup_assets(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
-    let cylinder = meshes.add(Cylinder::new(0.5, 1.0));
-
+    // Unlit flat-color materials: no lighting/shadow math per fragment, which
+    // is the Mini Motorways look AND the biggest GPU win on integrated graphics.
     let mut mat = |r: u8, g: u8, b: u8| {
-        materials.add(StandardMaterial::from_color(Color::srgb_u8(r, g, b)))
+        materials.add(StandardMaterial {
+            base_color: Color::srgb_u8(r, g, b),
+            unlit: true,
+            ..default()
+        })
     };
 
     commands.insert_resource(MinimalAssets {
-        cube,
-        cylinder,
-        ground: mat(97, 203, 139),   // grass green
-        road: mat(50, 50, 55),       // dark asphalt
-        trunk: mat(120, 80, 50),     // brown
-        canopy: mat(46, 150, 80),    // tree green
-        fence: mat(150, 150, 140),   // grey fence
+        ground: mat(97, 203, 139), // grass green
+        road: mat(50, 50, 55),     // dark asphalt
+        canopy: mat(46, 150, 80),  // tree green
+        fence: mat(150, 150, 140), // grey fence
         buildings: vec![
             mat(210, 95, 90),
             mat(240, 165, 85),
@@ -79,16 +74,19 @@ pub struct SpawnConfig {
 #[derive(Component)]
 pub struct CityRoot;
 
-/// Spawns a grid of minimalist city blocks.
-///
-/// Block pattern (each block is 5.5 x 4.0 units, same as the original):
-/// X-------
-/// | B B B
-/// | B B B
-/// X = crossroad, B = buildings
+/// One box instance pending merge: a material and a transform (translation +
+/// scale baked into the vertex data at merge time).
+struct Instance {
+    material: Handle<StandardMaterial>,
+    transform: Transform,
+}
+
+/// Spawns a grid of minimalist city blocks, merging all geometry into one mesh
+/// per material color.
 pub fn spawn_city(
     commands: &mut Commands,
     assets: &MinimalAssets,
+    meshes: &mut Assets<Mesh>,
     seed: u64,
     size: u32,
     config: SpawnConfig,
@@ -97,106 +95,126 @@ pub fn spawn_city(
     let noise = OpenSimplex::new(rng.random());
     let noise_scale = 0.025;
 
-    commands
-        .spawn((CityRoot, Transform::default(), Visibility::default()))
-        .with_children(|commands| {
-            let half_size = size as i32 / 2;
-            for x in -half_size..half_size {
-                for z in -half_size..half_size {
-                    let x = x as f32 * 5.5;
-                    let z = z as f32 * 4.0;
-                    let offset = Vec3::new(x, 0.0, z);
+    let mut instances: Vec<Instance> = Vec::new();
 
-                    spawn_roads_and_cars(commands, assets, &mut rng, offset, config);
+    let half_size = size as i32 / 2;
+    for x in -half_size..half_size {
+        for z in -half_size..half_size {
+            let x = x as f32 * 5.5;
+            let z = z as f32 * 4.0;
+            let offset = Vec3::new(x, 0.0, z);
 
-                    let density = noise.get([
-                        offset.x as f64 * noise_scale,
-                        offset.z as f64 * noise_scale,
-                        0.0,
-                    ]) * 0.5
-                        + 0.5;
+            push_roads_and_cars(&mut instances, assets, &mut rng, offset, config);
 
-                    let forest = 0.45;
-                    let low_density = 0.6;
-                    let medium_density = 0.7;
+            let density = noise.get([
+                offset.x as f64 * noise_scale,
+                offset.z as f64 * noise_scale,
+                0.0,
+            ]) * 0.5
+                + 0.5;
 
-                    // Ground tile
-                    spawn_cube(
-                        commands,
-                        &assets.ground,
-                        &assets.cube,
-                        offset + Vec3::new(2.75, -0.5, 2.0),
-                        Vec3::new(5.5, 0.4, 4.0),
-                    );
+            let forest = 0.45;
+            let low_density = 0.6;
+            let medium_density = 0.7;
 
-                    if config.minimal {
-                        continue;
+            // Ground tile
+            push_cube(
+                &mut instances,
+                &assets.ground,
+                offset + Vec3::new(2.75, -0.5, 2.0),
+                Vec3::new(5.5, 0.4, 4.0),
+            );
+
+            if config.minimal {
+                continue;
+            }
+
+            if density < forest {
+                push_forest(&mut instances, assets, offset, config);
+            } else if density < low_density {
+                push_low_density(&mut instances, assets, &mut rng, offset, config);
+            } else if density < medium_density {
+                push_medium_density(&mut instances, assets, &mut rng, offset, config);
+            } else {
+                push_high_density(&mut instances, assets, &mut rng, offset, config);
+            }
+        }
+    }
+
+    // Merge all instances into one mesh per material, then spawn one entity per
+    // material. This collapses thousands of boxes into ~16 merged meshes.
+    let mut groups: Vec<(Handle<StandardMaterial>, Vec<Transform>)> = Vec::new();
+    for inst in instances {
+        if let Some((_, transforms)) = groups
+            .iter_mut()
+            .find(|(mat, _)| *mat == inst.material)
+        {
+            transforms.push(inst.transform);
+        } else {
+            groups.push((inst.material.clone(), vec![inst.transform]));
+        }
+    }
+
+    commands.spawn((
+        CityRoot,
+        Transform::default(),
+        Visibility::default(),
+    )).with_children(|commands| {
+        for (material, transforms) in &groups {
+            let mut merged: Option<Mesh> = None;
+            for transform in transforms {
+                let cube = Mesh::from(Cuboid::new(1.0, 1.0, 1.0)).transformed_by(*transform);
+                match &mut merged {
+                    Some(m) => {
+                        let _ = m.merge(&cube);
                     }
-
-                    if density < forest {
-                        spawn_forest(commands, assets, offset, config);
-                    } else if density < low_density {
-                        spawn_low_density(commands, assets, &mut rng, offset, config);
-                    } else if density < medium_density {
-                        spawn_medium_density(commands, assets, &mut rng, offset, config);
-                    } else {
-                        spawn_high_density(commands, assets, &mut rng, offset, config);
-                    }
+                    None => merged = Some(cube),
                 }
             }
-        });
+            if let Some(mesh) = merged {
+                let handle = meshes.add(mesh);
+                commands.spawn((
+                    Mesh3d(handle),
+                    MeshMaterial3d(material.clone()),
+                    Transform::default(),
+                    Visibility::default(),
+                ));
+            }
+        }
+    });
 }
 
-/// Spawns a single cube instance (translation is the cube's center).
-fn spawn_cube(
-    commands: &mut ChildSpawnerCommands,
+/// Records a cube instance for later merge (translation is the cube's center).
+fn push_cube(
+    instances: &mut Vec<Instance>,
     material: &Handle<StandardMaterial>,
-    mesh: &Handle<Mesh>,
     translation: Vec3,
     size: Vec3,
 ) {
-    commands.spawn((
-        Mesh3d(mesh.clone()),
-        MeshMaterial3d(material.clone()),
-        Transform::from_translation(translation).with_scale(size),
-    ));
+    instances.push(Instance {
+        material: material.clone(),
+        transform: Transform::from_translation(translation).with_scale(size),
+    });
 }
 
-/// Spawns a single cylinder instance (translation is the cylinder's center).
-fn spawn_cylinder(
-    commands: &mut ChildSpawnerCommands,
-    material: &Handle<StandardMaterial>,
-    mesh: &Handle<Mesh>,
-    translation: Vec3,
-    scale: Vec3,
-) {
-    commands.spawn((
-        Mesh3d(mesh.clone()),
-        MeshMaterial3d(material.clone()),
-        Transform::from_translation(translation).with_scale(scale),
-    ));
-}
-
-fn spawn_roads_and_cars<R: RngExt>(
-    commands: &mut ChildSpawnerCommands,
+fn push_roads_and_cars<R: RngExt>(
+    instances: &mut Vec<Instance>,
     assets: &MinimalAssets,
     rng: &mut R,
     offset: Vec3,
     config: SpawnConfig,
 ) {
     // Horizontal road strip
-    spawn_cube(
-        commands,
+    push_cube(
+        instances,
         &assets.road,
-        &assets.cube,
         offset + Vec3::new(2.75, -0.35, 0.0),
         Vec3::new(5.5, 0.5, 1.0),
     );
     // Vertical road strip
-    spawn_cube(
-        commands,
+    push_cube(
+        instances,
         &assets.road,
-        &assets.cube,
         offset + Vec3::new(0.0, -0.35, 2.0),
         Vec3::new(1.0, 0.5, 4.0),
     );
@@ -205,14 +223,12 @@ fn spawn_roads_and_cars<R: RngExt>(
         return;
     }
 
-    // Cars along the horizontal road
     for i in 0..6 {
         let car_pos = Vec3::new(0.75 + i as f32 * 0.8, 0.0, 0.0);
         if rng.random::<f32>() < 0.25 {
-            spawn_cube(
-                commands,
+            push_cube(
+                instances,
                 &assets.cars[rng.random_range(0..assets.cars.len())],
-                &assets.cube,
                 offset + car_pos + Vec3::new(0.0, 0.35, -0.25),
                 Vec3::new(0.5, 0.3, 0.3),
             );
@@ -220,8 +236,8 @@ fn spawn_roads_and_cars<R: RngExt>(
     }
 }
 
-fn spawn_low_density<R: RngExt>(
-    commands: &mut ChildSpawnerCommands,
+fn push_low_density<R: RngExt>(
+    instances: &mut Vec<Instance>,
     assets: &MinimalAssets,
     rng: &mut R,
     offset: Vec3,
@@ -230,20 +246,19 @@ fn spawn_low_density<R: RngExt>(
     if !config.no_buildings {
         for x in 1..=2 {
             let height = 1.0 + rng.random::<f32>() * 1.5;
-            spawn_building(commands, assets, rng, offset + Vec3::new(x as f32 * 1.8, 0.0, 1.5), height);
-            spawn_building(commands, assets, rng, offset + Vec3::new(x as f32 * 1.8, 0.0, 3.0), height);
+            push_building(instances, assets, rng, offset + Vec3::new(x as f32 * 1.8, 0.0, 1.5), height);
+            push_building(instances, assets, rng, offset + Vec3::new(x as f32 * 1.8, 0.0, 3.0), height);
         }
     }
     if !config.no_decorations {
         for i in 0..=6 {
-            spawn_tree(commands, assets, offset + Vec3::new(0.75, 0.0, 0.75 + i as f32 * 0.4));
-            spawn_tree(commands, assets, offset + Vec3::new(4.75, 0.0, 0.75 + i as f32 * 0.4));
+            push_tree(instances, assets, offset + Vec3::new(0.75, 0.0, 0.75 + i as f32 * 0.4));
+            push_tree(instances, assets, offset + Vec3::new(4.75, 0.0, 0.75 + i as f32 * 0.4));
         }
         for i in 0..=4 {
-            spawn_cylinder(
-                commands,
+            push_cube(
+                instances,
                 &assets.fence,
-                &assets.cylinder,
                 offset + Vec3::new(2.75, 0.15, 0.75 + i as f32 * 0.6),
                 Vec3::new(0.08, 0.3, 0.08),
             );
@@ -251,8 +266,8 @@ fn spawn_low_density<R: RngExt>(
     }
 }
 
-fn spawn_medium_density<R: RngExt>(
-    commands: &mut ChildSpawnerCommands,
+fn push_medium_density<R: RngExt>(
+    instances: &mut Vec<Instance>,
     assets: &MinimalAssets,
     rng: &mut R,
     offset: Vec3,
@@ -261,19 +276,19 @@ fn spawn_medium_density<R: RngExt>(
     if !config.no_buildings {
         for x in 1..=5 {
             let height = 1.5 + rng.random::<f32>() * 2.5;
-            spawn_building(commands, assets, rng, offset + Vec3::new(x as f32 * 0.9, 0.0, 1.25), height);
-            spawn_building(commands, assets, rng, offset + Vec3::new(x as f32 * 0.9, 0.0, 3.0), height * 0.7);
+            push_building(instances, assets, rng, offset + Vec3::new(x as f32 * 0.9, 0.0, 1.25), height);
+            push_building(instances, assets, rng, offset + Vec3::new(x as f32 * 0.9, 0.0, 3.0), height * 0.7);
         }
     }
     if !config.no_decorations {
         for x in 1..=4 {
-            spawn_tree(commands, assets, offset + Vec3::new(x as f32 * 0.9, 0.0, 2.0));
+            push_tree(instances, assets, offset + Vec3::new(x as f32 * 0.9, 0.0, 2.0));
         }
     }
 }
 
-fn spawn_high_density<R: RngExt>(
-    commands: &mut ChildSpawnerCommands,
+fn push_high_density<R: RngExt>(
+    instances: &mut Vec<Instance>,
     assets: &MinimalAssets,
     rng: &mut R,
     offset: Vec3,
@@ -284,13 +299,13 @@ fn spawn_high_density<R: RngExt>(
     }
     for x in 0..3 {
         let height = 2.0 + rng.random::<f32>() * 3.0;
-        spawn_building(commands, assets, rng, offset + Vec3::new(1.25 + x as f32 * 1.5, 0.0, 1.25), height);
-        spawn_building(commands, assets, rng, offset + Vec3::new(1.25 + x as f32 * 1.5, 0.0, 3.0), height * 0.8);
+        push_building(instances, assets, rng, offset + Vec3::new(1.25 + x as f32 * 1.5, 0.0, 1.25), height);
+        push_building(instances, assets, rng, offset + Vec3::new(1.25 + x as f32 * 1.5, 0.0, 3.0), height * 0.8);
     }
 }
 
-fn spawn_forest(
-    commands: &mut ChildSpawnerCommands,
+fn push_forest(
+    instances: &mut Vec<Instance>,
     assets: &MinimalAssets,
     offset: Vec3,
     config: SpawnConfig,
@@ -306,46 +321,36 @@ fn spawn_forest(
             let pos = offset
                 + Vec3::new(x as f32, 0.0, z as f32) * Vec3::new(0.325, 0.0, 0.3)
                 + Vec3::new(0.75, 0.0, 0.85);
-            spawn_tree(commands, assets, pos);
+            push_tree(instances, assets, pos);
         }
     }
 }
 
-fn spawn_building<R: RngExt>(
-    commands: &mut ChildSpawnerCommands,
+fn push_building<R: RngExt>(
+    instances: &mut Vec<Instance>,
     assets: &MinimalAssets,
     rng: &mut R,
     translation: Vec3,
     height: f32,
 ) {
-    spawn_cube(
-        commands,
+    push_cube(
+        instances,
         &assets.buildings[rng.random_range(0..assets.buildings.len())],
-        &assets.cube,
         translation + Vec3::Y * (height / 2.0),
         Vec3::new(0.7, height, 0.7),
     );
 }
 
-fn spawn_tree(
-    commands: &mut ChildSpawnerCommands,
+fn push_tree(
+    instances: &mut Vec<Instance>,
     assets: &MinimalAssets,
     translation: Vec3,
 ) {
-    // trunk
-    spawn_cylinder(
-        commands,
-        &assets.trunk,
-        &assets.cylinder,
-        translation + Vec3::new(0.0, 0.4, 0.0),
-        Vec3::new(0.08, 0.8, 0.08),
-    );
-    // canopy
-    spawn_cube(
-        commands,
+    // A single flat-green box is the minimalist tree.
+    push_cube(
+        instances,
         &assets.canopy,
-        &assets.cube,
-        translation + Vec3::new(0.0, 1.1, 0.0),
-        Vec3::new(0.5, 0.5, 0.5),
+        translation + Vec3::new(0.0, 0.5, 0.0),
+        Vec3::new(0.4, 1.0, 0.4),
     );
 }

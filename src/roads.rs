@@ -306,24 +306,24 @@ pub(crate) fn road_placement_system(
         return;
     };
 
-    // Toggle snapping options and mode (only while neutral, so nothing disrupts
-    // an in-progress placement).
-    if matches!(*placement, Placement::Neutral) {
-        if keys.just_pressed(KeyCode::KeyC) {
-            *mode = match *mode {
-                RoadMode::Straight => RoadMode::Curve,
-                RoadMode::Curve => RoadMode::Straight,
-            };
-            info!("road mode: {:?}", *mode);
-        }
-        if keys.just_pressed(KeyCode::KeyR) {
-            snap.snap_to_roads = !snap.snap_to_roads;
-            info!("snap to roads: {}", snap.snap_to_roads);
-        }
-        if keys.just_pressed(KeyCode::KeyG) {
-            snap.snap_to_angles = !snap.snap_to_angles;
-            info!("snap to angles: {}", snap.snap_to_angles);
-        }
+    // Toggle snapping options and mode — always available, including during an
+    // in-progress placement. Snapping toggles affect the current placement
+    // immediately; toggling mode mid-placement cancels it (the state/mode
+    // mismatch falls through the state machine below).
+    if keys.just_pressed(KeyCode::KeyC) {
+        *mode = match *mode {
+            RoadMode::Straight => RoadMode::Curve,
+            RoadMode::Curve => RoadMode::Straight,
+        };
+        info!("road mode: {:?}", *mode);
+    }
+    if keys.just_pressed(KeyCode::KeyR) {
+        snap.snap_to_roads = !snap.snap_to_roads;
+        info!("snap to roads: {}", snap.snap_to_roads);
+    }
+    if keys.just_pressed(KeyCode::KeyG) {
+        snap.snap_to_angles = !snap.snap_to_angles;
+        info!("snap to angles: {}", snap.snap_to_angles);
     }
 
     // Snap the cursor: first to an existing road (if enabled), then constrain a

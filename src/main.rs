@@ -69,8 +69,8 @@ fn main() {
     .insert_resource(WinitSettings::continuous())
     .insert_resource(StaticTransformOptimizations::Enabled)
     .init_resource::<CameraRig>()
-    .add_systems(Startup, (spawn_camera, roads::setup_roads))
-    .add_systems(Update, update_camera)
+    .add_systems(Startup, (spawn_camera, roads::setup_roads, roads::spawn_hud))
+    .add_systems(Update, (update_camera, roads::update_hud))
     .add_systems(
         PostUpdate,
         roads::road_placement_system.after(TransformSystems::Propagate),

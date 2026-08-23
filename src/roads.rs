@@ -127,6 +127,10 @@ pub(crate) struct PreviewRoad;
 #[derive(Component)]
 pub(crate) struct RoadMeshMarker;
 
+/// On-screen HUD showing the road mode and snapping state.
+#[derive(Component)]
+pub(crate) struct HudMarker;
+
 /// Builds an unlit [`StandardMaterial`] (translucent when `alpha < 1.0`), with
 /// backface culling off so flat tessellated geometry renders from above.
 fn solid_material(
@@ -225,6 +229,45 @@ pub(crate) fn setup_roads(
                 Transform::from_xyz(0.0, CURSOR_STROKE_Y, 0.0).with_rotation(flat),
             ));
         });
+}
+
+/// Spawns the on-screen HUD (road mode + snapping state).
+pub(crate) fn spawn_hud(mut commands: Commands) {
+    commands.spawn((
+        HudMarker,
+        Text::new("Mode: Straight\nSnap roads: On\nSnap angles: Off"),
+        TextFont {
+            font_size: FontSize::Px(18.0),
+            ..default()
+        },
+        TextColor(Color::srgb(0.9, 0.9, 0.9)),
+        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: px(8.0),
+            right: px(8.0),
+            padding: UiRect::all(px(6.0)),
+            ..default()
+        },
+        ZIndex(1000),
+    ));
+}
+
+/// Updates the HUD text from the current mode and snapping state.
+pub(crate) fn update_hud(
+    mode: Res<RoadMode>,
+    snap: Res<SnapSettings>,
+    mut hud: Single<&mut Text, With<HudMarker>>,
+) {
+    let mode_str = match *mode {
+        RoadMode::Straight => "Straight",
+        RoadMode::Curve => "Curve",
+    };
+    hud.0 = format!(
+        "Mode: {mode_str}\nSnap roads: {}\nSnap angles: {}",
+        if snap.snap_to_roads { "On" } else { "Off" },
+        if snap.snap_to_angles { "On" } else { "Off" },
+    );
 }
 
 /// Per-frame road placement: moves the cursor, handles clicks, and updates /

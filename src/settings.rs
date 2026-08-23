@@ -13,14 +13,11 @@ use bevy::{
 };
 use rand::RngExt;
 
-use crate::assets::CityAssets;
-use crate::generate_city::{spawn_city, CityRoot};
+use crate::generate_city::{spawn_city, CityRoot, MinimalAssets, SpawnConfig};
 
 #[derive(Resource)]
 pub struct Settings {
     pub simulate_cars: bool,
-    pub shadow_maps_enabled: bool,
-    pub contact_shadows_enabled: bool,
     pub wireframe_enabled: bool,
     pub cpu_culling: bool,
 }
@@ -29,8 +26,6 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             simulate_cars: true,
-            shadow_maps_enabled: true,
-            contact_shadows_enabled: true,
             wireframe_enabled: false,
             cpu_culling: true,
         }
@@ -71,42 +66,6 @@ pub fn settings_ui() -> impl Scene {
                     on(|change: On<ValueChange<bool>>, mut settings: ResMut<Settings>| {
                         settings.simulate_cars = change.value;
                     })
-                ),
-                (
-                    @FeathersCheckbox {
-                        @caption: bsn! { Text("Shadow maps enabled") ThemedText }
-                    }
-                    Checked
-                    on(checkbox_self_update)
-                    on(
-                        |change: On<ValueChange<bool>>,
-                         mut settings: ResMut<Settings>,
-                         mut directional_lights: Query<&mut DirectionalLight>| {
-                            settings.shadow_maps_enabled = change.value;
-                            for mut light in &mut directional_lights {
-                                light.shadow_maps_enabled = change.value;
-
-                            }
-                        }
-                    )
-                ),
-                (
-                    @FeathersCheckbox {
-                        @caption: bsn! { Text("Contact shadows enabled") ThemedText }
-                    }
-                    Checked
-                    on(checkbox_self_update)
-                    on(
-                        |change: On<ValueChange<bool>>,
-                         mut settings: ResMut<Settings>,
-                         mut directional_lights: Query<&mut DirectionalLight>| {
-                            settings.contact_shadows_enabled = change.value;
-                            for mut light in &mut directional_lights {
-                                light.contact_shadows_enabled = change.value;
-
-                            }
-                        }
-                    )
                 ),
                 (
                     @FeathersCheckbox {
@@ -153,13 +112,20 @@ pub fn settings_ui() -> impl Scene {
                         |_activate: On<Activate>,
                          mut commands: Commands,
                          city_root: Single<Entity, With<CityRoot>>,
-                         assets: Res<CityAssets>| {
+                         assets: Res<MinimalAssets>,
+                         args: Res<crate::Args>| {
                             commands.entity(*city_root).despawn();
 
                             let mut rng = rand::rng();
                             let seed = rng.random::<u64>();
                             println!("new seed: {seed}");
-                            spawn_city(&mut commands, &assets, seed, 32);
+                            spawn_city(
+                                &mut commands,
+                                &assets,
+                                seed,
+                                args.size,
+                                SpawnConfig::default(),
+                            );
                         }
                     )
                 ),

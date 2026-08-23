@@ -6,18 +6,20 @@ description = "A city builder inspired by Cities: Skylines, built with Bevy. Sta
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-# Features required by the bevy_city example: loading assets over HTTPS,
-# the free-camera controller, the Feathers UI framework, and the web asset cache.
+# Features for the free-camera controller and the Feathers UI framework.
+# Assets are generated procedurally, so no HTTPS/asset-cache features are needed.
 bevy = { version = "0.19.1", features = [
-  "https",
   "free_camera",
   "bevy_feathers",
-  "web_asset_cache",
 ] }
 
 argh = "0.1"
 noise = "0.9.0"
 rand = "0.10.0"
+# First-party Bevy diagnostics (frame time / FPS / entity count). Only used by
+# the `--diagnostics` profiling flag; already compiled as a Bevy sub-crate, so
+# it adds no meaningful build time.
+bevy_diagnostic = "0.19.1"
 
 # --- Ultrabook-friendly profiles -------------------------------------------
 #

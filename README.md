@@ -24,18 +24,19 @@ cargo run -- --show-fps  # with a live FPS / frame-time / entity-count overlay
 | `Shift` (hold) | Pan faster |
 | `Q` / `E` | Rotate camera 90° (animated) |
 | `Scroll wheel` | Zoom in / out |
-| `Left click` | Start / confirm a road segment |
+| `Left click` | Start / confirm (and chain) a road segment |
 | `Right click` | Cancel the in-progress road segment |
 
 ## Road placement
 
-- A translucent gray sphere (diameter = road width) marks the cursor on the
-  ground.
-- **Left click** picks the start point — it snaps onto an existing road when
-  the cursor is close, so segments can branch.
-- A translucent road preview is drawn from the start point to the cursor.
-- **Second left click** commits the road as opaque and permanent.
-- **Right click** exits back to neutral without building.
+- A translucent gray **circle** (diameter = road width) marks the cursor on the
+  ground. When the cursor is within snap range of an existing road, it snaps to
+  the nearest point on that road.
+- **Left click** starts a segment; a translucent road preview is drawn from the
+  start point to the cursor.
+- Each **further left click** commits the preview as an opaque road and chains
+  a new segment from its end, so consecutive segments can be placed quickly.
+- **Right click** exits back to neutral without committing the current preview.
 
 All roads are currently straight segments.
 

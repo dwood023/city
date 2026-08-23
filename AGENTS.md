@@ -32,11 +32,12 @@ kept in sync as new gotchas are found). The traps most likely to waste time:
 
 - Scene is a flat ground plane (`#2e3d2a`) plus player-placed **straight road
   segments** — see `src/roads.rs`.
-- Road placement: left-click starts a segment (the start snaps to an existing
-  road when close), a translucent preview follows the cursor, a second
-  left-click commits it, and right-click cancels. Roads are `RoadSegment {
-  start, end }` (`Vec2` on the `y=0` plane), rendered as thin `Cuboid` slabs
-  sharing one unit-length mesh.
+- Road placement: the cursor (a flat translucent circle) snaps onto existing
+  roads when close; left-click starts a segment, a translucent preview follows
+  the cursor, and each further left-click commits it and chains a new segment
+  from its end (staying in the placing state). Right-click exits to neutral.
+  Roads are `RoadSegment { start, end }` (`Vec2` on the `y=0` plane), rendered
+  as thin `Cuboid` slabs sharing one unit-length mesh.
 - Camera is a movable **orthographic** rig (Q/E rotate 90° animated, WASD pan,
   Shift = faster pan, scroll zoom, 45° corner-on yaw) — see `CameraRig` /
   `update_camera` in `src/main.rs`.

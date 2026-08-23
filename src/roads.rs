@@ -2,14 +2,13 @@
 //! player draws with the mouse.
 //!
 //! Interaction model:
-//! - A translucent gray sphere (diameter = road width) marks the cursor's
-//!   position on the ground.
-//! - Left-click picks the start point (snapping onto an existing road when the
-//!   cursor is close) and enters the placing state.
-//! - In the placing state a translucent road is drawn from the start point to
-//!   the cursor; a second left-click commits it as an opaque road.
-//! - Right-click in the placing state cancels back to neutral without adding
-//!   anything.
+//! - A translucent gray circle (diameter = road width) marks the cursor's
+//!   position on the ground, snapping onto an existing road when close.
+//! - Left-click starts drawing: a translucent road is drawn from the start
+//!   point to the cursor.
+//! - Each further left-click commits the preview as an opaque road and chains a
+//!   new segment from its end, so consecutive segments can be placed quickly.
+//! - Right-click exits back to neutral without committing the current preview.
 
 use bevy::{prelude::*, window::PrimaryWindow};
 
@@ -18,6 +17,9 @@ const ROAD_WIDTH: f32 = 1.0;
 
 /// Height of a road slab (a thin box lying flat on the ground).
 const ROAD_HEIGHT: f32 = 0.05;
+
+/// Height of the cursor circle above the ground (avoids z-fighting).
+const CURSOR_Y: f32 = 0.02;
 
 /// Clicking within this distance of an existing road snaps the start point to it.
 const ROAD_SNAP_DISTANCE: f32 = ROAD_WIDTH * 0.6;
@@ -58,7 +60,7 @@ pub(crate) struct RoadSegment {
     end: Vec2,
 }
 
-/// The translucent sphere marking the cursor's ground position.
+/// The translucent circle marking the cursor's ground position.
 #[derive(Component)]
 pub(crate) struct CursorMarker;
 
@@ -117,12 +119,13 @@ pub(crate) fn setup_roads(
         Transform::from_scale(Vec3::new(GROUND_SIZE, 1.0, GROUND_SIZE)),
     ));
 
-    // Cursor sphere (diameter = road width), sitting on the ground.
+    // Cursor circle (diameter = road width), drawn flat on the ground.
     commands.spawn((
-        Mesh3d(meshes.add(Mesh::from(Sphere::new(ROAD_WIDTH / 2.0)))),
+        Mesh3d(meshes.add(Mesh::from(Circle::new(ROAD_WIDTH / 2.0)))),
         MeshMaterial3d(cursor),
         CursorMarker,
-        Transform::from_xyz(0.0, ROAD_WIDTH / 2.0, 0.0),
+        Transform::from_xyz(0.0, CURSOR_Y, 0.0)
+            .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
     ));
 }
 
@@ -158,29 +161,37 @@ pub(crate) fn road_placement_system(
         return;
     };
 
-    // The cursor sphere follows the mouse.
+    // Snap the cursor onto an existing road when close, and position the cursor
+    // circle at the snapped point.
+    let snapped = snap_to_roads(ground, &roads_q);
     if let Ok(mut tf) = cursor_q.single_mut() {
-        tf.translation = Vec3::new(ground.x, ROAD_WIDTH / 2.0, ground.y);
+        tf.translation = Vec3::new(snapped.x, CURSOR_Y, snapped.y);
     }
 
     let state = *placement;
     match state {
         Placement::Neutral => {
             if buttons.just_pressed(MouseButton::Left) {
-                let start = snap_to_roads(ground, &roads_q);
-                let preview = spawn_preview(&mut commands, &assets, start, ground);
-                *placement = Placement::Placing { start, preview };
+                let preview = spawn_preview(&mut commands, &assets, snapped, snapped);
+                *placement = Placement::Placing {
+                    start: snapped,
+                    preview,
+                };
             }
         }
         Placement::Placing { start, preview } => {
             if let Ok(mut tf) = preview_q.get_mut(preview) {
-                set_road_transform(&mut tf, start, ground);
+                set_road_transform(&mut tf, start, snapped);
             }
 
             if buttons.just_pressed(MouseButton::Left) {
-                spawn_road(&mut commands, &assets, start, ground);
-                commands.entity(preview).despawn();
-                *placement = Placement::Neutral;
+                spawn_road(&mut commands, &assets, start, snapped);
+                // Stay in the placing state, chaining the next segment from the
+                // end of the one just committed.
+                *placement = Placement::Placing {
+                    start: snapped,
+                    preview,
+                };
             } else if buttons.just_pressed(MouseButton::Right) {
                 commands.entity(preview).despawn();
                 *placement = Placement::Neutral;

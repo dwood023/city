@@ -141,3 +141,40 @@ Environment: **Rust 1.98.0**, **Bevy 0.19.1**, **edition 2024** (pinned in
 - A `pub(crate)` system whose signature mentions a module-local `struct`/`enum`
   (e.g. as `Res<...>` or a `Query` filter) needs those types to be `pub(crate)`
   too, or the compiler errors "type … is private".
+
+## Building a mesh by hand
+
+- **`PrimitiveTopology` and `Indices` are NOT in `prelude`** →
+  `use bevy::mesh::{Indices, PrimitiveTopology};`.
+- **`RenderAssetUsages` is NOT in `prelude`** → `use bevy::asset::RenderAssetUsages;`.
+- Manual mesh construction:
+  ```rust
+  let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+  mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions: Vec<[f32; 3]>);
+  mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals: Vec<[f32; 3]>);
+  mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs: Vec<[f32; 2]>);
+  mesh.insert_indices(Indices::U32(indices: Vec<u32>));
+  ```
+- `StandardMaterial.cull_mode: Option<Face>` (default `Some(Face::Back)`); set
+  `cull_mode: None` for flat/uncertain-winding geometry.
+
+## Lyon (2D path tessellation)
+
+- Add `lyon_path` + `lyon_tessellation` (both `1.0`). Stroke a polyline into a
+  filled ribbon with round joins/caps:
+  ```rust
+  use lyon_path::Path;
+  use lyon_tessellation::{
+      math::{point, Point}, BuffersBuilder, LineCap, LineJoin,
+      StrokeOptions, StrokeTessellator, StrokeVertex, VertexBuffers,
+  };
+  let options = StrokeOptions::tolerance(0.05)
+      .with_line_width(w).with_line_join(LineJoin::Round).with_line_cap(LineCap::Round);
+  let mut geom: VertexBuffers<Point, u32> = VertexBuffers::new();
+  tessellator.tessellate_path(&path, &options,
+      &mut BuffersBuilder::new(&mut geom, |v: StrokeVertex| v.position()));
+  // geom.vertices: Vec<Point>, geom.indices: Vec<u32>
+  ```
+- The stroke vertex constructor receives a **`StrokeVertex`**, not `Point` —
+  call `.position()` on it. `lyon_tessellation::geometry_builder::simple_builder`
+  is an alternative but only supports `u16` indices.

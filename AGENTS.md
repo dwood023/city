@@ -32,12 +32,15 @@ kept in sync as new gotchas are found). The traps most likely to waste time:
 
 - Scene is a flat ground plane (`#2e3d2a`) plus player-placed **straight road
   segments** — see `src/roads.rs`.
-- Road placement: the cursor (a flat translucent circle) snaps onto existing
-  roads when close; left-click starts a segment, a translucent preview follows
-  the cursor, and each further left-click commits it and chains a new segment
-  from its end (staying in the placing state). Right-click exits to neutral.
-  Roads are `RoadSegment { start, end }` (`Vec2` on the `y=0` plane), rendered
-  as thin `Cuboid` slabs sharing one unit-length mesh.
+- Roads are a set of **polylines ("chains")** (`RoadNetwork`). Committed chains
+  are stroked with **lyon** (round joins + round caps) into a **single merged
+  mesh**, giving consistent road width at any turn angle and clean T-junctions
+  and crossings. Starting a road on another road's interior splits that chain at
+  the junction (a T-junction node).
+- Placement: the cursor (flat circle + opaque ring) snaps to roads; left-click
+  starts a chain, each further left-click commits a segment and chains, and
+  right-click finalizes. `i_overlay` union is deferred until roads need
+  per-road colors/zoning (opaque same-color overlap is visually correct now).
 - Camera is a movable **orthographic** rig (Q/E rotate 90° animated, WASD pan,
   Shift = faster pan, scroll zoom, 45° corner-on yaw) — see `CameraRig` /
   `update_camera` in `src/main.rs`.

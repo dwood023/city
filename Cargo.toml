@@ -6,20 +6,20 @@ description = "A city builder inspired by Cities: Skylines, built with Bevy. Sta
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-# Features for the free-camera controller and the Feathers UI framework.
-# Assets are generated procedurally, so no HTTPS/asset-cache features are needed.
-bevy = { version = "0.19.1", features = [
-  "free_camera",
-  "bevy_feathers",
-] }
+# Bevy with no extra features: the camera is custom (orthographic rig), assets
+# are procedural, and there's no UI framework. Keep the feature set minimal so
+# the first build stays as small as possible.
+bevy = "0.19.1"
 
 argh = "0.1"
-noise = "0.9.0"
-rand = "0.10.0"
 # First-party Bevy diagnostics (frame time / FPS / entity count). Only used by
 # the `--diagnostics` profiling flag; already compiled as a Bevy sub-crate, so
 # it adds no meaningful build time.
 bevy_diagnostic = "0.19.1"
+# Lyon: 2D path tessellation. Used to stroke road centerlines into filled
+# ribbons with round joins/caps (consistent width at turns and T-junctions).
+lyon_path = "1.0"
+lyon_tessellation = "1.0"
 
 # --- Ultrabook-friendly profiles -------------------------------------------
 #

@@ -29,16 +29,18 @@ cargo run -- --show-fps  # with a live FPS / frame-time / entity-count overlay
 
 ## Road placement
 
-- A translucent gray **circle** (diameter = road width) marks the cursor on the
-  ground. When the cursor is within snap range of an existing road, it snaps to
-  the nearest point on that road.
-- **Left click** starts a segment; a translucent road preview is drawn from the
-  start point to the cursor.
-- Each **further left click** commits the preview as an opaque road and chains
-  a new segment from its end, so consecutive segments can be placed quickly.
-- **Right click** exits back to neutral without committing the current preview.
+- A translucent gray **circle** with an opaque ring stroke marks the cursor.
+  When it's within snap range of an existing road, it snaps to the nearest
+  point on that road.
+- **Left click** starts a road (splitting an existing road if it lands on its
+  interior, forming a T-junction). A translucent preview follows the cursor.
+- Each **further left click** commits a segment and chains a new one from its
+  end, so consecutive segments can be placed quickly.
+- **Right click** finalizes the road and returns to neutral.
 
-All roads are currently straight segments.
+Roads are straight segments rendered as one tessellated mesh with **round joins
+and caps** (via [lyon](https://lib.rs/crates/lyon)), so width stays consistent
+at any turn angle and junctions/crossings join cleanly.
 
 ## CLI options (argh)
 
@@ -54,7 +56,7 @@ All roads are currently straight segments.
 ```
 src/
   main.rs       app setup, orthographic camera rig (pan/rotate/zoom)
-  roads.rs      ground plane + road placement mechanic
+  roads.rs      ground plane + road network (lyon-tessellated chains)
   diagnostics.rs optional FPS/entity-count diagnostics + on-screen overlay
 docs/
   bevy-0.19-api-notes.md   living reference of Bevy 0.19 API differences
@@ -65,6 +67,9 @@ docs/
 - Bevy 0.19 changes a lot vs. the widely documented 0.13–0.15 API; see
   `docs/bevy-0.19-api-notes.md` before writing Bevy code (also mirrored in
   `AGENTS.md`).
+- Road rendering uses [lyon](https://lib.rs/crates/lyon) (path stroking with
+  round joins/caps). Boolean union (`i_overlay`) is deferred until roads need
+  per-road colors/zoning.
 - Build is fast for iteration: `mold` linker (`.cargo/config.toml`) plus
   `opt-level = 1` for our code / `opt-level = 3` for deps. First build is slow
   (~17 min) but incremental builds are ~1–3 s.

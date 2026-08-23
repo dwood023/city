@@ -12,6 +12,7 @@ use bevy::{
     camera::ScalingMode,
     color::palettes::css::WHITE,
     feathers::{dark_theme::create_dark_theme, theme::UiTheme, FeathersPlugins},
+    input::mouse::MouseWheel,
     pbr::wireframe::{WireframeConfig, WireframePlugin},
     post_process::bloom::Bloom,
     prelude::*,
@@ -114,7 +115,7 @@ fn main() {
         Startup,
         (spawn_camera, setup_assets, spawn_city_system).chain(),
     )
-    .add_systems(Update, (simulate_cars, rotate_camera));
+    .add_systems(Update, (simulate_cars, update_camera));
 
     // The settings UI spawns once at startup (spawning it every frame would
     // leak a new UI panel per frame and grind FPS down over time).
@@ -131,23 +132,40 @@ fn main() {
     app.run();
 }
 
-/// Fixed orthographic camera rig (Cities: Skylines style): no free movement,
-/// just Q/E to rotate the view 90° around the city. The yaw is permanently
-/// offset by 45° so we always look at the *corners* of blocks, not straight
-/// down a road.
+/// Movable orthographic camera rig (Cities: Skylines style). The projection is
+/// orthographic and the yaw is permanently offset 45° so we always look at the
+/// *corners* of blocks, never straight down a road. Q/E rotate the view 90°
+/// (animated), WASD pans, and the scroll wheel zooms.
 #[derive(Resource)]
 struct CameraRig {
-    /// Which of the four compass positions we are viewing from (0..=3).
-    index: i32,
+    /// World point the camera looks at (panning moves this; y stays 0).
+    focus: Vec3,
+    /// Smoothed yaw (radians), eased toward `target_yaw` every frame.
+    current_yaw: f32,
+    /// Target yaw, stepped in 90° increments. Kept unbounded so rotation always
+    /// continues in the pressed direction instead of snapping the shortest way.
+    target_yaw: f32,
+    /// Zoom level: 1.0 is the default framing, higher is more zoomed in.
+    zoom: f32,
+    /// Orthographic view bounds (world units) at zoom 1.0.
+    base_width: f32,
+    base_height: f32,
 }
 
 impl Default for CameraRig {
     fn default() -> Self {
-        Self { index: 0 }
+        Self {
+            focus: Vec3::ZERO,
+            current_yaw: CAMERA_YAW_OFFSET,
+            target_yaw: CAMERA_YAW_OFFSET,
+            zoom: 1.0,
+            base_width: 1.0,
+            base_height: 1.0,
+        }
     }
 }
 
-/// Marker for the single fixed camera (used by `rotate_camera` and `apply_pretty`).
+/// Marker for the single camera (used by `update_camera` and `apply_pretty`).
 #[derive(Component)]
 struct CityCamera;
 
@@ -159,63 +177,120 @@ const CAMERA_ELEVATION: f32 = std::f32::consts::FRAC_PI_4;
 /// corners (isometric-ish) rather than straight along a street.
 const CAMERA_YAW_OFFSET: f32 = std::f32::consts::FRAC_PI_4;
 
-/// Distance from the city center to the camera. With an orthographic projection
+/// Distance from the focus point to the camera. With an orthographic projection
 /// this does not change apparent size — it only needs to sit inside the
 /// near/far clip planes.
 const CAMERA_DISTANCE: f32 = 200.0;
 
-/// Where the camera sits for a given compass index, looking at the origin.
-fn camera_position(index: i32) -> Vec3 {
-    let yaw = CAMERA_YAW_OFFSET + index as f32 * std::f32::consts::FRAC_PI_2;
+/// Rotation smoothing rate (higher = faster ease toward the target yaw).
+const ROTATE_EASE: f32 = 8.0;
+
+/// Pan speed in world units per second at zoom 1.0 (scales with zoom).
+const PAN_SPEED: f32 = 25.0;
+
+/// Multiplicative zoom amount per scroll-wheel notch.
+const ZOOM_STEP: f32 = 0.1;
+
+const ZOOM_MIN: f32 = 0.2;
+const ZOOM_MAX: f32 = 6.0;
+
+/// Where the camera sits for a given focus point and yaw.
+fn camera_position(focus: Vec3, yaw: f32) -> Vec3 {
     let horizontal = CAMERA_DISTANCE * CAMERA_ELEVATION.cos();
     let y = CAMERA_DISTANCE * CAMERA_ELEVATION.sin();
-    Vec3::new(horizontal * yaw.sin(), y, horizontal * yaw.cos())
+    focus + Vec3::new(horizontal * yaw.sin(), y, horizontal * yaw.cos())
 }
 
-/// Spawns the fixed orthographic camera, framed to the whole city.
-fn spawn_camera(mut commands: Commands, args: Res<Args>) {
+/// Spawns the orthographic camera, framed to the whole city.
+fn spawn_camera(mut commands: Commands, args: Res<Args>, mut rig: ResMut<CameraRig>) {
     // City half-extents: width = size * 5.5, depth = size * 4.0. At the 45°
     // yaw the horizontal extent we must fit is the diagonal; at 45° elevation
     // the vertical extent is the foreshortened depth plus building heights.
     // These are generous bounds (with margin) and can be tuned to taste.
     let s = args.size as f32;
-    let (min_width, min_height) = (s * 7.5, s * 4.0);
+    rig.base_width = s * 7.5;
+    rig.base_height = s * 4.0;
 
     commands.spawn((
         Camera3d::default(),
         Projection::Orthographic(OrthographicProjection {
             scaling_mode: ScalingMode::AutoMin {
-                min_width,
-                min_height,
+                min_width: rig.base_width,
+                min_height: rig.base_height,
             },
             ..OrthographicProjection::default_3d()
         }),
         Msaa::Off,
         ProfileCameraMarker,
         CityCamera,
-        Transform::from_translation(camera_position(0)).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_translation(camera_position(Vec3::ZERO, CAMERA_YAW_OFFSET))
+            .looking_at(Vec3::ZERO, Vec3::Y),
     ));
 }
 
-/// Q/E rotate the fixed camera 90° around the city.
-fn rotate_camera(
+/// Per-frame camera input and smoothing: Q/E rotate (animated), WASD pans,
+/// scroll zooms.
+fn update_camera(
     keys: Res<ButtonInput<KeyCode>>,
+    mut scroll: MessageReader<MouseWheel>,
+    time: Res<Time>,
     mut rig: ResMut<CameraRig>,
-    mut camera: Single<&mut Transform, With<CityCamera>>,
+    mut transform: Single<&mut Transform, With<CityCamera>>,
+    mut projection: Single<&mut Projection, With<CityCamera>>,
 ) {
-    let next = if keys.just_pressed(KeyCode::KeyQ) {
-        Some(rig.index - 1) // rotate the view counter-clockwise
-    } else if keys.just_pressed(KeyCode::KeyE) {
-        Some(rig.index + 1) // rotate the view clockwise
-    } else {
-        None
-    };
+    let dt = time.delta_secs();
 
-    if let Some(index) = next {
-        rig.index = index.rem_euclid(4);
-        let pos = camera_position(rig.index);
-        camera.translation = pos;
-        camera.look_at(Vec3::ZERO, Vec3::Y);
+    // Rotation target: Q/E step the yaw by 90°.
+    if keys.just_pressed(KeyCode::KeyQ) {
+        rig.target_yaw -= std::f32::consts::FRAC_PI_2; // counter-clockwise
+    }
+    if keys.just_pressed(KeyCode::KeyE) {
+        rig.target_yaw += std::f32::consts::FRAC_PI_2; // clockwise
+    }
+
+    // Zoom: scroll up = zoom in.
+    let scroll_y: f32 = scroll.read().map(|e| e.y).sum();
+    if scroll_y != 0.0 {
+        rig.zoom = (rig.zoom * (1.0 - scroll_y * ZOOM_STEP)).clamp(ZOOM_MIN, ZOOM_MAX);
+    }
+
+    // Ease the yaw toward its target (frame-rate independent).
+    let blend = 1.0 - (-ROTATE_EASE * dt).exp();
+    rig.current_yaw += (rig.target_yaw - rig.current_yaw) * blend;
+
+    // Pan: move the focus along the camera's screen axes. `away` is the
+    // horizontal "up on screen" direction (away from the camera); `right` is
+    // the horizontal "right on screen" direction.
+    let (sin, cos) = rig.current_yaw.sin_cos();
+    let away = Vec3::new(-sin, 0.0, -cos);
+    let right = Vec3::new(cos, 0.0, -sin);
+
+    let mut pan = Vec2::ZERO;
+    if keys.pressed(KeyCode::KeyW) {
+        pan.y += 1.0;
+    }
+    if keys.pressed(KeyCode::KeyS) {
+        pan.y -= 1.0;
+    }
+    if keys.pressed(KeyCode::KeyD) {
+        pan.x += 1.0;
+    }
+    if keys.pressed(KeyCode::KeyA) {
+        pan.x -= 1.0;
+    }
+    let pan_speed = PAN_SPEED / rig.zoom;
+    rig.focus += (right * pan.x + away * pan.y) * pan_speed * dt;
+
+    // Apply the camera transform.
+    transform.translation = camera_position(rig.focus, rig.current_yaw);
+    transform.look_at(rig.focus, Vec3::Y);
+
+    // Apply the projection framing from the current zoom.
+    if let Projection::Orthographic(ref mut ortho) = **projection {
+        ortho.scaling_mode = ScalingMode::AutoMin {
+            min_width: rig.base_width / rig.zoom,
+            min_height: rig.base_height / rig.zoom,
+        };
     }
 }
 

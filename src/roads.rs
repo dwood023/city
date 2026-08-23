@@ -33,6 +33,12 @@ const GROUND_RGB: (u8, u8, u8) = (0x2e, 0x3d, 0x2a);
 /// Gray used for roads (opaque) and for the preview/cursor (translucent).
 const ROAD_RGB: (u8, u8, u8) = (120, 122, 128);
 
+/// Opaque ring color for the cursor stroke (white, to stay visible over roads).
+const CURSOR_STROKE_RGB: (u8, u8, u8) = (255, 255, 255);
+
+/// Thickness of the cursor ring stroke, in world units.
+const CURSOR_STROKE_WIDTH: f32 = 0.06;
+
 /// Shared meshes/materials for the road mechanic.
 #[derive(Resource)]
 pub(crate) struct RoadAssets {
@@ -101,7 +107,8 @@ pub(crate) fn setup_roads(
     let ground = solid_material(&mut materials, GROUND_RGB, 1.0);
     let road_opaque = solid_material(&mut materials, ROAD_RGB, 1.0);
     let road_preview = solid_material(&mut materials, ROAD_RGB, 0.5);
-    let cursor = solid_material(&mut materials, ROAD_RGB, 0.5);
+    let cursor_fill = solid_material(&mut materials, ROAD_RGB, 0.4);
+    let cursor_stroke = solid_material(&mut materials, CURSOR_STROKE_RGB, 1.0);
 
     let road_mesh = meshes.add(Cuboid::new(1.0, ROAD_HEIGHT, ROAD_WIDTH));
 
@@ -119,14 +126,32 @@ pub(crate) fn setup_roads(
         Transform::from_scale(Vec3::new(GROUND_SIZE, 1.0, GROUND_SIZE)),
     ));
 
-    // Cursor circle (diameter = road width), drawn flat on the ground.
-    commands.spawn((
-        Mesh3d(meshes.add(Mesh::from(Circle::new(ROAD_WIDTH / 2.0)))),
-        MeshMaterial3d(cursor),
-        CursorMarker,
-        Transform::from_xyz(0.0, CURSOR_Y, 0.0)
-            .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
-    ));
+    // Cursor: a flat circle (translucent fill) plus an opaque ring stroke, so
+    // it stays visible over roads. The marker is a parent holding the position;
+    // the fill and stroke are children laid flat on the ground.
+    let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+    let radius = ROAD_WIDTH / 2.0;
+    commands
+        .spawn((
+            CursorMarker,
+            Transform::from_xyz(0.0, 0.0, 0.0),
+            Visibility::default(),
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                Mesh3d(meshes.add(Mesh::from(Circle::new(radius)))),
+                MeshMaterial3d(cursor_fill),
+                Transform::from_xyz(0.0, CURSOR_Y, 0.0).with_rotation(flat),
+            ));
+            parent.spawn((
+                Mesh3d(meshes.add(Mesh::from(Annulus::new(
+                    radius - CURSOR_STROKE_WIDTH,
+                    radius,
+                )))),
+                MeshMaterial3d(cursor_stroke),
+                Transform::from_xyz(0.0, CURSOR_Y + 0.01, 0.0).with_rotation(flat),
+            ));
+        });
 }
 
 /// Per-frame road placement: moves the cursor sphere, handles clicks, and
@@ -165,7 +190,7 @@ pub(crate) fn road_placement_system(
     // circle at the snapped point.
     let snapped = snap_to_roads(ground, &roads_q);
     if let Ok(mut tf) = cursor_q.single_mut() {
-        tf.translation = Vec3::new(snapped.x, CURSOR_Y, snapped.y);
+        tf.translation = Vec3::new(snapped.x, 0.0, snapped.y);
     }
 
     let state = *placement;

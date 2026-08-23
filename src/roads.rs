@@ -536,7 +536,9 @@ pub(crate) fn road_placement_system(
             poly.push(preview_end);
             poly
         }
-        Placement::CurveStart { p0 } => vec![*p0, preview_end],
+        // While placing the control point there's no road yet — just the hollow
+        // outline shown by the guide lines, so no filled fill.
+        Placement::CurveStart { .. } => Vec::new(),
         Placement::Curve { p0, p1 } => sample_quadratic_bezier(*p0, *p1, preview_end),
     };
     update_preview(&assets, &mut meshes, &mut preview_vis_q, &preview_polyline);

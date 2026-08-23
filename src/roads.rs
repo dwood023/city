@@ -63,11 +63,28 @@ const CURSOR_STROKE_RGB: (u8, u8, u8) = (255, 255, 255);
 /// Thickness of the cursor ring stroke, in world units.
 const CURSOR_STROKE_WIDTH: f32 = 0.06;
 
+/// Width of the translucent curve guide lines (the bezier control polygon).
+const GUIDE_LINE_WIDTH: f32 = ROAD_WIDTH * 0.2;
+
+/// Height of the curve guide lines above the ground (avoids z-fighting roads).
+const GUIDE_Y: f32 = 0.015;
+
+/// Height of the curve control-point marker above the ground.
+const CONTROL_Y: f32 = 0.02;
+
+/// Radius of the curve control-point marker.
+const CONTROL_POINT_RADIUS: f32 = 0.35;
+
+/// Color of the curve guide lines and control point (light blue).
+const GUIDE_RGB: (u8, u8, u8) = (130, 200, 255);
+
 /// Shared meshes/materials for the road mechanic.
 #[derive(Resource)]
 pub(crate) struct RoadAssets {
     /// Single reused mesh handle for the preview ribbon (rebuilt each frame).
     preview_handle: Handle<Mesh>,
+    /// Single reused mesh handle for the curve guide-line ribbon.
+    guide_handle: Handle<Mesh>,
 }
 
 /// The committed road network: a set of polylines (`(x, z)` points).
@@ -131,6 +148,14 @@ pub(crate) struct RoadMeshMarker;
 #[derive(Component)]
 pub(crate) struct HudMarker;
 
+/// The translucent curve guide-line ribbon (control polygon).
+#[derive(Component)]
+pub(crate) struct GuideLines;
+
+/// The marker at the curve's control point.
+#[derive(Component)]
+pub(crate) struct ControlPoint;
+
 /// Builds an unlit [`StandardMaterial`] (translucent when `alpha < 1.0`), with
 /// backface culling off so flat tessellated geometry renders from above.
 fn solid_material(
@@ -168,11 +193,14 @@ pub(crate) fn setup_roads(
     let road_preview = solid_material(&mut materials, ROAD_RGB, 0.5);
     let cursor_fill = solid_material(&mut materials, ROAD_RGB, 0.4);
     let cursor_stroke = solid_material(&mut materials, CURSOR_STROKE_RGB, 1.0);
+    let guide_material = solid_material(&mut materials, GUIDE_RGB, 0.75);
 
     let preview_handle = meshes.add(tessellate_chains(&[]));
+    let guide_handle = meshes.add(tessellate_chains_at(&[], GUIDE_LINE_WIDTH, GUIDE_Y));
 
     commands.insert_resource(RoadAssets {
         preview_handle: preview_handle.clone(),
+        guide_handle: guide_handle.clone(),
     });
     commands.insert_resource(RoadNetwork::default());
     commands.insert_resource(RoadMode::default());
@@ -204,9 +232,25 @@ pub(crate) fn setup_roads(
         Visibility::Hidden,
     ));
 
+    // Curve guide lines + control point marker (hidden until placing a curve).
+    commands.spawn((
+        Mesh3d(guide_handle),
+        MeshMaterial3d(guide_material.clone()),
+        GuideLines,
+        Transform::default(),
+        Visibility::Hidden,
+    ));
+    let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+    commands.spawn((
+        Mesh3d(meshes.add(Mesh::from(Circle::new(CONTROL_POINT_RADIUS)))),
+        MeshMaterial3d(guide_material),
+        ControlPoint,
+        Transform::from_xyz(0.0, CONTROL_Y, 0.0).with_rotation(flat),
+        Visibility::Hidden,
+    ));
+
     // Cursor: a flat circle (translucent fill) plus an opaque ring stroke,
     // parented so both move together. The marker holds the position.
-    let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
     let radius = ROAD_WIDTH / 2.0;
     commands
         .spawn((
@@ -288,6 +332,8 @@ pub(crate) fn road_placement_system(
     window_q: Query<&Window, With<PrimaryWindow>>,
     mut cursor_q: Query<&mut Transform, With<CursorMarker>>,
     mut preview_vis_q: Query<&mut Visibility, With<PreviewRoad>>,
+    mut guide_vis_q: Query<&mut Visibility, With<GuideLines>>,
+    mut control_q: Query<(&mut Transform, &mut Visibility), With<ControlPoint>>,
     mut road_mesh_q: Query<&mut Mesh3d, With<RoadMeshMarker>>,
 ) {
     let Ok((camera, camera_transform)) = camera_q.single() else {
@@ -356,6 +402,37 @@ pub(crate) fn road_placement_system(
         Placement::Curve { p0, p1 } => sample_quadratic_bezier(*p0, *p1, snapped),
     };
     update_preview(&assets, &mut meshes, &mut preview_vis_q, &preview_polyline);
+
+    // Show the curve's control point and guide lines (the control polygon)
+    // once the control point is placed; hide them otherwise.
+    match &*placement {
+        Placement::Curve { p0, p1 } => {
+            if let Ok(mut vis) = guide_vis_q.single_mut() {
+                *vis = Visibility::Visible;
+            }
+            if let Some(mut mesh) = meshes.get_mut(&assets.guide_handle) {
+                let line0 = [*p0, *p1];
+                let line1 = [*p1, snapped];
+                *mesh = tessellate_chains_at(
+                    &[line0.as_slice(), line1.as_slice()],
+                    GUIDE_LINE_WIDTH,
+                    GUIDE_Y,
+                );
+            }
+            if let Ok((mut tf, mut vis)) = control_q.single_mut() {
+                tf.translation = Vec3::new(p1.x, CONTROL_Y, p1.y);
+                *vis = Visibility::Visible;
+            }
+        }
+        _ => {
+            if let Ok(mut vis) = guide_vis_q.single_mut() {
+                *vis = Visibility::Hidden;
+            }
+            if let Ok((_, mut vis)) = control_q.single_mut() {
+                *vis = Visibility::Hidden;
+            }
+        }
+    }
 
     // Take ownership of the state, compute the next state, then put it back.
     let state = std::mem::replace(&mut *placement, Placement::Neutral);
@@ -466,12 +543,19 @@ fn rebuild_road_mesh(
     }
 }
 
-/// Strokes every chain into one flat triangle mesh (round joins + caps).
+/// Strokes every chain into one flat triangle mesh (round joins + caps) at
+/// road width and the standard road height.
 fn tessellate_chains(chains: &[&[Vec2]]) -> Mesh {
+    tessellate_chains_at(chains, ROAD_WIDTH, ROAD_Y)
+}
+
+/// Strokes every chain into one flat triangle mesh (round joins + caps) with a
+/// given width and height.
+fn tessellate_chains_at(chains: &[&[Vec2]], width: f32, y: f32) -> Mesh {
     let mut geometry: VertexBuffers<Point, u32> = VertexBuffers::new();
     let mut tessellator = StrokeTessellator::new();
     let options = StrokeOptions::tolerance(0.05)
-        .with_line_width(ROAD_WIDTH)
+        .with_line_width(width)
         .with_line_join(LineJoin::Round)
         .with_line_cap(LineCap::Round);
 
@@ -497,7 +581,7 @@ fn tessellate_chains(chains: &[&[Vec2]]) -> Mesh {
     let positions: Vec<[f32; 3]> = geometry
         .vertices
         .iter()
-        .map(|p| [p.x, ROAD_Y, p.y])
+        .map(|p| [p.x, y, p.y])
         .collect();
     let normals: Vec<[f32; 3]> = positions.iter().map(|_| [0.0, 1.0, 0.0]).collect();
     let uvs: Vec<[f32; 2]> = geometry.vertices.iter().map(|p| [p.x, p.y]).collect();

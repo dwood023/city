@@ -41,6 +41,8 @@ Toggle between **straight** and **curve** mode with `C`. An on-screen HUD
   its end. Right-click finalizes.
 - **Curve**: left-click sets the start, a second left-click sets the control
   point, and a third left-click confirms the end — a quadratic Bezier curve.
+  The control point stays marked, with translucent guide lines to the start and
+  end points (the bezier control polygon).
 
 The cursor is a translucent gray circle with an opaque ring stroke. Two
 independent snapping toggles (like Cities: Skylines) affect it: **snap to

@@ -97,6 +97,10 @@ const MIN_OVERLAP: f32 = ROAD_WIDTH * 0.5;
 /// Color of the blocked-preview ribbon (red).
 const BLOCKED_RGB: (u8, u8, u8) = (220, 60, 60);
 
+/// Cosine of the max allowed turn between consecutive straight segments
+/// (blocks near-reversals / U-turns). cos(135°) ≈ -0.707.
+const MAX_TURN_COS: f32 = -0.707;
+
 /// Shared meshes/materials for the road mechanic.
 #[derive(Resource)]
 pub(crate) struct RoadAssets {
@@ -157,6 +161,25 @@ pub(crate) enum Placement {
     CurveStart { p0: Vec2 },
     /// Curve mode: start + control set, waiting for the end point.
     Curve { p0: Vec2, p1: Vec2 },
+}
+
+/// Why a placement is currently blocked (for the HUD / commit gate).
+#[derive(Default, Clone, Copy, PartialEq, Debug)]
+pub(crate) enum BlockReason {
+    #[default]
+    None,
+    TooShort,
+    OverlapsRoad,
+    AngleTooGreat,
+}
+
+/// Per-frame placement info surfaced to the HUD.
+#[derive(Resource, Default)]
+pub(crate) struct PlacementInfo {
+    /// Direction angle of the current segment, in degrees `[0, 360)`.
+    pub(crate) angle_deg: f32,
+    /// Why the current placement is blocked (`None` when valid).
+    pub(crate) reason: BlockReason,
 }
 
 /// The translucent circle + ring marking the cursor's ground position.
@@ -243,6 +266,7 @@ pub(crate) fn setup_roads(
     commands.insert_resource(RoadMode::default());
     commands.insert_resource(SnapSettings::default());
     commands.insert_resource(Placement::default());
+    commands.insert_resource(PlacementInfo::default());
 
     // Ground plane (a large flat quad in the XZ plane at y = 0).
     commands.spawn((
@@ -335,20 +359,28 @@ pub(crate) fn spawn_hud(mut commands: Commands) {
     ));
 }
 
-/// Updates the HUD text from the current mode and snapping state.
+/// Updates the HUD text from the current mode, snapping state, and placement info.
 pub(crate) fn update_hud(
     mode: Res<RoadMode>,
     snap: Res<SnapSettings>,
+    info: Res<PlacementInfo>,
     mut hud: Single<&mut Text, With<HudMarker>>,
 ) {
     let mode_str = match *mode {
         RoadMode::Straight => "Straight",
         RoadMode::Curve => "Curve",
     };
+    let reason = match info.reason {
+        BlockReason::None => String::new(),
+        BlockReason::TooShort => "Invalid: too short".into(),
+        BlockReason::OverlapsRoad => "Invalid: overlaps road".into(),
+        BlockReason::AngleTooGreat => "Invalid: angle too great".into(),
+    };
     hud.0 = format!(
-        "Mode: {mode_str}\nSnap roads: {}\nSnap angles: {}",
+        "Mode: {mode_str}\nSnap roads: {}\nSnap angles: {}\nAngle: {:.0}\u{00B0}\n{reason}",
         if snap.snap_to_roads { "On" } else { "Off" },
         if snap.snap_to_angles { "On" } else { "Off" },
+        info.angle_deg,
     );
 }
 
@@ -385,6 +417,7 @@ pub(crate) fn road_placement_system(
     mut mode: ResMut<RoadMode>,
     mut snap: ResMut<SnapSettings>,
     mut placement: ResMut<Placement>,
+    mut info: ResMut<PlacementInfo>,
     mut network: ResMut<RoadNetwork>,
     mut meshes: ResMut<Assets<Mesh>>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -406,19 +439,21 @@ pub(crate) fn road_placement_system(
             (With<CursorFill>, Without<PreviewRoad>),
         >,
     )>,
-    mut guide_vis_q: Query<
-        &mut Visibility,
-        (With<GuideLines>, Without<PreviewRoad>, Without<ControlPoint>),
-    >,
-    mut control_q: Query<
-        (&mut Transform, &mut Visibility),
-        (
-            With<ControlPoint>,
-            Without<PreviewRoad>,
-            Without<GuideLines>,
-            Without<CursorMarker>,
-        ),
-    >,
+    mut guide_ctrl: ParamSet<(
+        Query<
+            &mut Visibility,
+            (With<GuideLines>, Without<PreviewRoad>, Without<ControlPoint>),
+        >,
+        Query<
+            (&mut Transform, &mut Visibility),
+            (
+                With<ControlPoint>,
+                Without<PreviewRoad>,
+                Without<GuideLines>,
+                Without<CursorMarker>,
+            ),
+        >,
+    )>,
     mut road_mesh_q: Query<&mut Mesh3d, With<RoadMeshMarker>>,
 ) {
     let Ok((camera, camera_transform)) = camera_q.single() else {
@@ -477,26 +512,26 @@ pub(crate) fn road_placement_system(
         tf.translation = Vec3::new(snapped.x, 0.0, snapped.y);
     }
 
-    // Determine whether the current placement would be blocked (too short, or
-    // overlapping / too close to an existing road).
-    let blocked = placement_is_blocked(&*placement, snapped, &network);
+    // Determine whether the current placement would be blocked, and record the
+    // reason + current angle for the HUD.
+    let reason = placement_block_reason(&*placement, snapped, &network);
+    info.angle_deg = current_segment_angle(&*placement, snapped);
+    info.reason = reason;
+    let blocked = reason != BlockReason::None;
 
-    // Compute the preview polyline. When a straight placement is blocked, stop at
-    // the committed chain instead of extending to the (possibly fold-back) cursor,
-    // so we never draw a spurious loop.
+    // Compute the preview polyline. When blocked, extend to the *raw* cursor
+    // (not the snapped point, which can fold back into a spurious loop) so the
+    // preview stays visible and clearly red.
+    let preview_end = if blocked { ground } else { snapped };
     let preview_polyline: Vec<Vec2> = match &*placement {
         Placement::Neutral => Vec::new(),
         Placement::Straight { points } => {
-            if blocked {
-                points.clone()
-            } else {
-                let mut poly = points.clone();
-                poly.push(snapped);
-                poly
-            }
+            let mut poly = points.clone();
+            poly.push(preview_end);
+            poly
         }
-        Placement::CurveStart { p0 } => vec![*p0, snapped],
-        Placement::Curve { p0, p1 } => sample_quadratic_bezier(*p0, *p1, snapped),
+        Placement::CurveStart { p0 } => vec![*p0, preview_end],
+        Placement::Curve { p0, p1 } => sample_quadratic_bezier(*p0, *p1, preview_end),
     };
     update_preview(&assets, &mut meshes, &mut preview_vis_q, &preview_polyline);
 
@@ -520,7 +555,7 @@ pub(crate) fn road_placement_system(
     // once the control point is placed; hide them otherwise.
     match &*placement {
         Placement::Curve { p0, p1 } => {
-            if let Ok(mut vis) = guide_vis_q.single_mut() {
+            if let Ok(mut vis) = guide_ctrl.p0().single_mut() {
                 *vis = Visibility::Visible;
             }
             if let Some(mut mesh) = meshes.get_mut(&assets.guide_handle) {
@@ -532,16 +567,16 @@ pub(crate) fn road_placement_system(
                     GUIDE_Y,
                 );
             }
-            if let Ok((mut tf, mut vis)) = control_q.single_mut() {
+            if let Ok((mut tf, mut vis)) = guide_ctrl.p1().single_mut() {
                 tf.translation = Vec3::new(p1.x, CONTROL_Y, p1.y);
                 *vis = Visibility::Visible;
             }
         }
         _ => {
-            if let Ok(mut vis) = guide_vis_q.single_mut() {
+            if let Ok(mut vis) = guide_ctrl.p0().single_mut() {
                 *vis = Visibility::Hidden;
             }
-            if let Ok((_, mut vis)) = control_q.single_mut() {
+            if let Ok((_, mut vis)) = guide_ctrl.p1().single_mut() {
                 *vis = Visibility::Hidden;
             }
         }
@@ -562,10 +597,10 @@ pub(crate) fn road_placement_system(
         }
         (Placement::Straight { mut points }, RoadMode::Straight) => {
             if buttons.just_pressed(MouseButton::Left) {
-                let ok = points
-                    .last()
-                    .copied()
-                    .is_some_and(|last| !segment_is_blocked(last, snapped, &network, &points));
+                let ok = points.last().copied().is_some_and(|last| {
+                    segment_block_reason(last, snapped, &network, &points, prev_segment_dir(&points))
+                        == BlockReason::None
+                });
                 if ok {
                     points.push(snapped);
                     rebuild_road_mesh(&network, &points, &mut meshes, &mut road_mesh_q);
@@ -844,30 +879,88 @@ fn is_blocked_overlap(a: Vec2, b: Vec2, network: &RoadNetwork, active: &[Vec2]) 
     false
 }
 
-/// True if segment `[a, b]` is too short or overlaps an existing road.
-fn segment_is_blocked(a: Vec2, b: Vec2, network: &RoadNetwork, active: &[Vec2]) -> bool {
-    a.distance(b) < MIN_ROAD_LENGTH || is_blocked_overlap(a, b, network, active)
+/// The reason segment `[a, b]` is blocked (or `None` if valid).
+fn segment_block_reason(
+    a: Vec2,
+    b: Vec2,
+    network: &RoadNetwork,
+    active: &[Vec2],
+    prev_dir: Option<Vec2>,
+) -> BlockReason {
+    if a.distance(b) < MIN_ROAD_LENGTH {
+        return BlockReason::TooShort;
+    }
+    if let Some(prev) = prev_dir {
+        let new_dir = b - a;
+        if prev.length_squared() > 1e-8 && new_dir.length_squared() > 1e-8 {
+            let cos_turn = prev.normalize().dot(new_dir.normalize());
+            if cos_turn < MAX_TURN_COS {
+                return BlockReason::AngleTooGreat;
+            }
+        }
+    }
+    if is_blocked_overlap(a, b, network, active) {
+        return BlockReason::OverlapsRoad;
+    }
+    BlockReason::None
 }
 
-/// Whether the current placement's preview segment would be blocked.
-fn placement_is_blocked(placement: &Placement, snapped: Vec2, network: &RoadNetwork) -> bool {
+/// Direction of the last committed straight segment in `points`, if any.
+fn prev_segment_dir(points: &[Vec2]) -> Option<Vec2> {
+    (points.len() >= 2).then(|| points[points.len() - 1] - points[points.len() - 2])
+}
+
+/// The reason the current placement's preview would be blocked (or `None`).
+fn placement_block_reason(
+    placement: &Placement,
+    snapped: Vec2,
+    network: &RoadNetwork,
+) -> BlockReason {
     match placement {
-        Placement::Neutral => false,
+        Placement::Neutral => BlockReason::None,
         Placement::Straight { points } => {
             let Some(&a) = points.last() else {
-                return false;
+                return BlockReason::None;
             };
-            segment_is_blocked(a, snapped, network, points)
+            segment_block_reason(a, snapped, network, points, prev_segment_dir(points))
         }
-        Placement::CurveStart { p0 } => segment_is_blocked(*p0, snapped, network, &[]),
+        Placement::CurveStart { p0 } => segment_block_reason(*p0, snapped, network, &[], None),
         Placement::Curve { p0, p1 } => {
             let poly = sample_quadratic_bezier(*p0, *p1, snapped);
             if poly_total_length(&poly) < MIN_ROAD_LENGTH {
-                return true;
+                return BlockReason::TooShort;
             }
-            poly.windows(2)
+            if poly
+                .windows(2)
                 .any(|w| is_blocked_overlap(w[0], w[1], network, &[]))
+            {
+                return BlockReason::OverlapsRoad;
+            }
+            BlockReason::None
         }
+    }
+}
+
+/// Direction angle (degrees, `[0, 360)`) of the current segment being drawn.
+fn current_segment_angle(placement: &Placement, snapped: Vec2) -> f32 {
+    let start = match placement {
+        Placement::Neutral => return 0.0,
+        Placement::Straight { points } => points.last().copied(),
+        Placement::CurveStart { p0 } => Some(*p0),
+        Placement::Curve { p0, .. } => Some(*p0),
+    };
+    let Some(start) = start else {
+        return 0.0;
+    };
+    let dir = snapped - start;
+    if dir.length_squared() < 1e-8 {
+        return 0.0;
+    }
+    let deg = dir.y.atan2(dir.x).to_degrees();
+    if deg < 0.0 {
+        deg + 360.0
+    } else {
+        deg
     }
 }
 

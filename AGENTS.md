@@ -47,10 +47,11 @@ kept in sync as new gotchas are found). The traps most likely to waste time:
   shown while placing.
 - Independent snapping toggles (like CS): **snap to roads** (`R`) and **snap to
   angles** (`G`, constrains straight segments to 90° multiples, `ANGLE_SNAP_STEP`).
-- **Placement guards** (preview turns red when blocked): segments too short
-  (`MIN_ROAD_LENGTH`), overlapping an existing road, or running too close to a
-  parallel/near-collinear road (`MIN_CLEARANCE`, `PARALLEL_DOT`, `MIN_OVERLAP`)
-  are refused. Crossings and angled branches are allowed.
+- **Placement guards** (preview + cursor turn red when blocked): segments too
+  short (`MIN_ROAD_LENGTH`), overlapping an existing road, too close to a
+  parallel/near-collinear road (`MIN_CLEARANCE`, `PARALLEL_DOT`, `MIN_OVERLAP`),
+  or a too-sharp turn (`MAX_TURN_COS`) are refused. Crossings and angled branches
+  are allowed. The HUD shows the current road angle and the invalid reason.
 - `i_overlay` union is deferred until roads need per-road colors/zoning (opaque
   same-color overlap is visually correct now).
 - Camera is a movable **orthographic** rig (Q/E rotate 90° animated, WASD pan,

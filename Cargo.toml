@@ -5,6 +5,16 @@ edition = "2024"
 description = "A city builder inspired by Cities: Skylines, built with Bevy. Started from the official bevy_city example (procedurally generated city)."
 license = "MIT OR Apache-2.0"
 
+# Fast-iteration switch. Bevy's `dynamic_linking` feature compiles Bevy as a
+# shared library, so `cargo run` re-links in a fraction of a second instead of
+# re-linking a huge static binary on every edit. This is THE win for iterative
+# development on a slow machine.
+#
+# It is a *default* feature so plain `cargo run` just works. CI disables it
+# (--no-default-features) to produce a static release binary.
+[features]
+default = ["bevy/dynamic_linking"]
+
 [dependencies]
 # Features for the free-camera controller and the Feathers UI framework.
 # Assets are generated procedurally, so no HTTPS/asset-cache features are needed.

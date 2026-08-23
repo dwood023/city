@@ -49,7 +49,9 @@ jobs:
           shared-key: "build"
 
       - name: Build (release)
-        run: cargo build --release --locked
+        # --no-default-features drops bevy/dynamic_linking so the uploaded
+        # binary is static (self-contained), not a dylib requiring Bevy's .so.
+        run: cargo build --release --locked --no-default-features
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4

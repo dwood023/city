@@ -33,15 +33,15 @@ const ROAD_WIDTH: f32 = 1.0;
 /// Height of the flat road mesh above the ground (avoids z-fighting).
 const ROAD_Y: f32 = 0.01;
 
-/// Height of the preview ribbon above the road plane, so a blocked (red) or
-/// in-progress preview never z-fights the committed roads beneath it.
-const PREVIEW_Y: f32 = 0.013;
+/// Height of the preview ribbon, well above the road plane so it never
+/// z-fights the committed roads beneath it, even at rounded joins.
+const PREVIEW_Y: f32 = 0.02;
 
 /// Height of the cursor fill circle above the ground.
-const CURSOR_Y: f32 = 0.02;
+const CURSOR_Y: f32 = 0.05;
 
 /// Height of the cursor stroke ring above the fill.
-const CURSOR_STROKE_Y: f32 = 0.03;
+const CURSOR_STROKE_Y: f32 = 0.06;
 
 /// Clicking within this distance of an existing road snaps the cursor to it.
 const ROAD_SNAP_DISTANCE: f32 = ROAD_WIDTH * 0.6;
@@ -71,10 +71,10 @@ const CURSOR_STROKE_WIDTH: f32 = 0.06;
 const GUIDE_LINE_WIDTH: f32 = ROAD_WIDTH * 0.2;
 
 /// Height of the curve guide lines above the ground (avoids z-fighting roads).
-const GUIDE_Y: f32 = 0.015;
+const GUIDE_Y: f32 = 0.03;
 
 /// Height of the curve control-point marker above the ground.
-const CONTROL_Y: f32 = 0.02;
+const CONTROL_Y: f32 = 0.04;
 
 /// Radius of the curve control-point marker.
 const CONTROL_POINT_RADIUS: f32 = 0.35;
@@ -108,6 +108,10 @@ pub(crate) struct RoadAssets {
     preview_material: Handle<StandardMaterial>,
     /// Red preview material shown when a placement would be blocked.
     preview_blocked: Handle<StandardMaterial>,
+    /// Cursor fill material (normal).
+    cursor_fill: Handle<StandardMaterial>,
+    /// Cursor fill material shown red when a placement would be blocked.
+    cursor_fill_blocked: Handle<StandardMaterial>,
 }
 
 /// The committed road network: a set of polylines (`(x, z)` points).
@@ -158,6 +162,10 @@ pub(crate) enum Placement {
 /// The translucent circle + ring marking the cursor's ground position.
 #[derive(Component)]
 pub(crate) struct CursorMarker;
+
+/// The cursor's translucent fill disc (recoloured red when placement is blocked).
+#[derive(Component)]
+pub(crate) struct CursorFill;
 
 /// The translucent preview road shown while placing.
 #[derive(Component)]
@@ -216,6 +224,7 @@ pub(crate) fn setup_roads(
     let road_preview = solid_material(&mut materials, ROAD_RGB, 0.5);
     let cursor_fill = solid_material(&mut materials, ROAD_RGB, 0.4);
     let cursor_stroke = solid_material(&mut materials, CURSOR_STROKE_RGB, 1.0);
+    let cursor_fill_blocked = solid_material(&mut materials, BLOCKED_RGB, 0.4);
     let guide_material = solid_material(&mut materials, GUIDE_RGB, 0.75);
     let preview_blocked = solid_material(&mut materials, BLOCKED_RGB, 0.6);
 
@@ -227,6 +236,8 @@ pub(crate) fn setup_roads(
         guide_handle: guide_handle.clone(),
         preview_material: road_preview.clone(),
         preview_blocked: preview_blocked.clone(),
+        cursor_fill: cursor_fill.clone(),
+        cursor_fill_blocked: cursor_fill_blocked.clone(),
     });
     commands.insert_resource(RoadNetwork::default());
     commands.insert_resource(RoadMode::default());
@@ -288,6 +299,7 @@ pub(crate) fn setup_roads(
             parent.spawn((
                 Mesh3d(meshes.add(Mesh::from(Circle::new(radius)))),
                 MeshMaterial3d(cursor_fill),
+                CursorFill,
                 Transform::from_xyz(0.0, CURSOR_Y, 0.0).with_rotation(flat),
             ));
             parent.spawn((
@@ -340,6 +352,29 @@ pub(crate) fn update_hud(
     );
 }
 
+/// Converts the current placement state to `new_mode`, finalizing any confirmed
+/// straight segments (so they persist across the switch) and carrying the active
+/// endpoint as the new mode's start point.
+fn convert_placement(state: Placement, new_mode: RoadMode, network: &mut RoadNetwork) -> Placement {
+    if let Placement::Straight { points } = &state {
+        if points.len() >= 2 {
+            network.chains.push(points.clone());
+        }
+    }
+    let start = match &state {
+        Placement::Straight { points } => points.last().copied(),
+        Placement::CurveStart { p0 } => Some(*p0),
+        Placement::Curve { p0, .. } => Some(*p0),
+        Placement::Neutral => None,
+    };
+    match new_mode {
+        RoadMode::Straight => start.map_or(Placement::Neutral, |p| Placement::Straight {
+            points: vec![p],
+        }),
+        RoadMode::Curve => start.map_or(Placement::Neutral, |p| Placement::CurveStart { p0: p }),
+    }
+}
+
 /// Per-frame road placement: moves the cursor, handles clicks, and updates /
 /// commits / finalizes roads.
 ///
@@ -361,7 +396,16 @@ pub(crate) fn road_placement_system(
         &mut Visibility,
         (With<PreviewRoad>, Without<GuideLines>, Without<ControlPoint>),
     >,
-    mut preview_mat_q: Query<&mut MeshMaterial3d<StandardMaterial>, With<PreviewRoad>>,
+    mut mesh_mat: ParamSet<(
+        Query<
+            &mut MeshMaterial3d<StandardMaterial>,
+            (With<PreviewRoad>, Without<CursorFill>),
+        >,
+        Query<
+            &mut MeshMaterial3d<StandardMaterial>,
+            (With<CursorFill>, Without<PreviewRoad>),
+        >,
+    )>,
     mut guide_vis_q: Query<
         &mut Visibility,
         (With<GuideLines>, Without<PreviewRoad>, Without<ControlPoint>),
@@ -394,14 +438,16 @@ pub(crate) fn road_placement_system(
     };
 
     // Toggle snapping options and mode — always available, including during an
-    // in-progress placement. Snapping toggles affect the current placement
-    // immediately; toggling mode mid-placement cancels it (the state/mode
-    // mismatch falls through the state machine below).
+    // in-progress placement. Toggling mode converts the current placement to the
+    // new mode (finalizing confirmed segments) rather than discarding it.
     if keys.just_pressed(KeyCode::KeyC) {
-        *mode = match *mode {
+        let new_mode = match *mode {
             RoadMode::Straight => RoadMode::Curve,
             RoadMode::Curve => RoadMode::Straight,
         };
+        let state = std::mem::replace(&mut *placement, Placement::Neutral);
+        *placement = convert_placement(state, new_mode, &mut network);
+        *mode = new_mode;
         info!("road mode: {:?}", *mode);
     }
     if keys.just_pressed(KeyCode::KeyR) {
@@ -431,26 +477,42 @@ pub(crate) fn road_placement_system(
         tf.translation = Vec3::new(snapped.x, 0.0, snapped.y);
     }
 
-    // Compute the preview polyline from the current state.
+    // Determine whether the current placement would be blocked (too short, or
+    // overlapping / too close to an existing road).
+    let blocked = placement_is_blocked(&*placement, snapped, &network);
+
+    // Compute the preview polyline. When a straight placement is blocked, stop at
+    // the committed chain instead of extending to the (possibly fold-back) cursor,
+    // so we never draw a spurious loop.
     let preview_polyline: Vec<Vec2> = match &*placement {
         Placement::Neutral => Vec::new(),
         Placement::Straight { points } => {
-            let mut poly = points.clone();
-            poly.push(snapped);
-            poly
+            if blocked {
+                points.clone()
+            } else {
+                let mut poly = points.clone();
+                poly.push(snapped);
+                poly
+            }
         }
         Placement::CurveStart { p0 } => vec![*p0, snapped],
         Placement::Curve { p0, p1 } => sample_quadratic_bezier(*p0, *p1, snapped),
     };
     update_preview(&assets, &mut meshes, &mut preview_vis_q, &preview_polyline);
 
-    // Swap the preview material to red when the current placement is blocked.
-    let blocked = placement_is_blocked(&*placement, snapped, &network);
-    if let Ok(mut mat) = preview_mat_q.single_mut() {
+    // Swap the preview and cursor-fill materials to red when blocked.
+    if let Ok(mut mat) = mesh_mat.p0().single_mut() {
         *mat = MeshMaterial3d(if blocked {
             assets.preview_blocked.clone()
         } else {
             assets.preview_material.clone()
+        });
+    }
+    if let Ok(mut mat) = mesh_mat.p1().single_mut() {
+        *mat = MeshMaterial3d(if blocked {
+            assets.cursor_fill_blocked.clone()
+        } else {
+            assets.cursor_fill.clone()
         });
     }
 

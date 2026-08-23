@@ -33,7 +33,8 @@ cargo run -- --show-fps  # with a live FPS / frame-time / entity-count overlay
 ## Road placement
 
 Toggle between **straight** and **curve** mode with `C`. An on-screen HUD
-(top-right) shows the current mode and snapping state.
+(top-right) shows the current mode and snapping state. Switching modes mid-draw
+preserves the start point and keeps any confirmed straight road segments.
 
 - **Straight**: left-click starts a road (splitting an existing road if it lands
   on its interior, forming a T-junction). A translucent preview follows the

@@ -40,9 +40,11 @@ kept in sync as new gotchas are found). The traps most likely to waste time:
 - Two placement modes (toggle `C`): **straight** (click-to-start, left-click
   commits-and-chains, right-click finalizes) and **curve** (three clicks = start,
   control point, end — a quadratic Bezier sampled into a polyline). Consecutive
-  curves chain from the previous end. The preview is a tessellated ribbon
-  rebuilt each frame into one reused mesh handle; the curve's control point and
-  translucent guide lines (control polygon) are shown while placing.
+  curves chain from the previous end. Switching modes preserves the start point
+  and finalizes any confirmed straight segments (they don't disappear). The
+  preview is a tessellated ribbon rebuilt each frame into one reused mesh handle;
+  the curve's control point and translucent guide lines (control polygon) are
+  shown while placing.
 - Independent snapping toggles (like CS): **snap to roads** (`R`) and **snap to
   angles** (`G`, constrains straight segments to 90° multiples, `ANGLE_SNAP_STEP`).
 - **Placement guards** (preview turns red when blocked): segments too short

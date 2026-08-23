@@ -9,7 +9,7 @@
 use argh::FromArgs;
 use bevy::{
     anti_alias::taa::TemporalAntiAliasing,
-    camera_controller::free_camera::{FreeCamera, FreeCameraPlugin},
+    camera::ScalingMode,
     color::palettes::css::WHITE,
     feathers::{dark_theme::create_dark_theme, theme::UiTheme, FeathersPlugins},
     pbr::wireframe::{WireframeConfig, WireframePlugin},
@@ -95,7 +95,6 @@ fn main() {
             }),
             ..default()
         }),
-        FreeCameraPlugin,
         FeathersPlugins,
         WireframePlugin::default(),
     ))
@@ -110,11 +109,12 @@ fn main() {
         ..default()
     })
     .insert_resource(StaticTransformOptimizations::Enabled)
+    .init_resource::<CameraRig>()
     .add_systems(
         Startup,
-        (scene.spawn(), setup_assets, spawn_city_system).chain(),
+        (spawn_camera, setup_assets, spawn_city_system).chain(),
     )
-    .add_systems(Update, simulate_cars);
+    .add_systems(Update, (simulate_cars, rotate_camera));
 
     // The settings UI spawns once at startup (spawning it every frame would
     // leak a new UI panel per frame and grind FPS down over time).
@@ -131,17 +131,91 @@ fn main() {
     app.run();
 }
 
-fn scene() -> impl SceneList {
-    bsn_list![camera()]
+/// Fixed orthographic camera rig (Cities: Skylines style): no free movement,
+/// just Q/E to rotate the view 90° around the city. The yaw is permanently
+/// offset by 45° so we always look at the *corners* of blocks, not straight
+/// down a road.
+#[derive(Resource)]
+struct CameraRig {
+    /// Which of the four compass positions we are viewing from (0..=3).
+    index: i32,
 }
 
-fn camera() -> impl Scene {
-    bsn! {
-        Camera3d
-        template_value(Transform::from_xyz(15.0, 10.0, 20.0).looking_at(Vec3::ZERO, Vec3::Y))
-        FreeCamera
-        Msaa::Off
-        ProfileCameraMarker
+impl Default for CameraRig {
+    fn default() -> Self {
+        Self { index: 0 }
+    }
+}
+
+/// Marker for the single fixed camera (used by `rotate_camera` and `apply_pretty`).
+#[derive(Component)]
+struct CityCamera;
+
+/// Elevation of the camera above the horizon (radians). 45° gives the classic
+/// three-quarter view where you see both block tops and building sides.
+const CAMERA_ELEVATION: f32 = std::f32::consts::FRAC_PI_4;
+
+/// The yaw is always offset 45° off the grid axes, so the view looks at block
+/// corners (isometric-ish) rather than straight along a street.
+const CAMERA_YAW_OFFSET: f32 = std::f32::consts::FRAC_PI_4;
+
+/// Distance from the city center to the camera. With an orthographic projection
+/// this does not change apparent size — it only needs to sit inside the
+/// near/far clip planes.
+const CAMERA_DISTANCE: f32 = 200.0;
+
+/// Where the camera sits for a given compass index, looking at the origin.
+fn camera_position(index: i32) -> Vec3 {
+    let yaw = CAMERA_YAW_OFFSET + index as f32 * std::f32::consts::FRAC_PI_2;
+    let horizontal = CAMERA_DISTANCE * CAMERA_ELEVATION.cos();
+    let y = CAMERA_DISTANCE * CAMERA_ELEVATION.sin();
+    Vec3::new(horizontal * yaw.sin(), y, horizontal * yaw.cos())
+}
+
+/// Spawns the fixed orthographic camera, framed to the whole city.
+fn spawn_camera(mut commands: Commands, args: Res<Args>) {
+    // City half-extents: width = size * 5.5, depth = size * 4.0. At the 45°
+    // yaw the horizontal extent we must fit is the diagonal; at 45° elevation
+    // the vertical extent is the foreshortened depth plus building heights.
+    // These are generous bounds (with margin) and can be tuned to taste.
+    let s = args.size as f32;
+    let (min_width, min_height) = (s * 7.5, s * 4.0);
+
+    commands.spawn((
+        Camera3d::default(),
+        Projection::Orthographic(OrthographicProjection {
+            scaling_mode: ScalingMode::AutoMin {
+                min_width,
+                min_height,
+            },
+            ..OrthographicProjection::default_3d()
+        }),
+        Msaa::Off,
+        ProfileCameraMarker,
+        CityCamera,
+        Transform::from_translation(camera_position(0)).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+}
+
+/// Q/E rotate the fixed camera 90° around the city.
+fn rotate_camera(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut rig: ResMut<CameraRig>,
+    mut camera: Single<&mut Transform, With<CityCamera>>,
+) {
+    let next = if keys.just_pressed(KeyCode::KeyQ) {
+        Some(rig.index - 1) // rotate the view counter-clockwise
+    } else if keys.just_pressed(KeyCode::KeyE) {
+        Some(rig.index + 1) // rotate the view clockwise
+    } else {
+        None
+    };
+
+    if let Some(index) = next {
+        rig.index = index.rem_euclid(4);
+        let pos = camera_position(rig.index);
+        camera.translation = pos;
+        camera.look_at(Vec3::ZERO, Vec3::Y);
     }
 }
 

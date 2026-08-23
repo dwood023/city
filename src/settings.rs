@@ -1,6 +1,5 @@
 use bevy::{
     camera::visibility::NoCpuCulling,
-    camera_controller::free_camera::FreeCameraState,
     feathers::{
         self,
         controls::{FeathersButton, FeathersCheckbox},
@@ -41,12 +40,6 @@ pub fn settings_ui() -> impl Scene {
             padding: px(8),
         }
         ThemeBackgroundColor(feathers::tokens::WINDOW_BG)
-        on(|_: On<Pointer<Over>>, mut free_camera_state: Single<&mut FreeCameraState>| {
-            free_camera_state.enabled = false;
-        })
-        on(|_: On<Pointer<Out>>, mut free_camera_state: Single<&mut FreeCameraState>| {
-            free_camera_state.enabled = true;
-        })
         Children [(
             Node {
                 display: Display::Flex,

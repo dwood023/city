@@ -1,0 +1,12 @@
+# Use `mold`, the fast drop-in linker, for the final binary link.
+#
+# GNU ld (the default) spends several seconds linking Bevy's large binary on
+# every `cargo run`; mold does the same link in well under a second. This is
+# the single biggest win for iterative `cargo run` after the first build —
+# and it's why we don't need Bevy's (currently broken) `dynamic_linking`.
+#
+# NOTE: changing rustflags invalidates the existing target/ cache, so the very
+# next build is a full recompile. That is a one-time cost; every build after it
+# links ~5x faster.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]

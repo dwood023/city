@@ -1,75 +1,69 @@
 # city-builder
 
-A minimalist, procedurally generated city built with [Bevy](https://bevyengine.org) 0.19.
+A city builder built with [Bevy](https://bevyengine.org) 0.19, in the style of
+Cities: Skylines.
 
-Originally forked from the official [`bevy_city` example](https://github.com/bevyengine/bevy/tree/v0.19.1/examples/large_scenes/bevy_city)
-(a heavily detailed stress test), this version was rebuilt around a hard
-performance constraint: it must run smoothly on an **integrated GPU** (Intel UHD 620).
-
-To achieve that, the scene is now **fully procedural and minimalist** (a
-Mini Motorways-style look): every building, tree, car, and fence is a small set
-of **shared colored primitives** (cubes, cylinders, spheres). Because all
-instances of a given prop share the same mesh and material, Bevy batches them
-into a tiny number of draw calls, and the GPU only ever holds a handful of
-meshes — avoiding the shared-memory thrash the detailed glTF asset version hit.
-
-- procedural grid city with ground, roads, buildings, trees, fences, cars
-- naive car traffic simulation
-- Feathers settings UI: simulate cars, wireframe, CPU culling, and a
-  "Regenerate City" button
-- optional on-screen FPS / frame-time / entity-count overlay
+Currently an early prototype: the scene is stripped down to a flat ground plane
+so we can iterate on core mechanics. The first mechanic is **road placement** —
+draw straight road segments with the mouse.
 
 ## Run
 
-Requires **Rust ≥ 1.95** (Bevy 0.19 MSRV). Update your toolchain with `rustup update stable`.
+Requires **Rust 1.98.0** (pinned in `rust-toolchain.toml`; Bevy 0.19 MSRV is 1.95).
 
 ```sh
-cargo run                # dev build — minimalist city, ~45 FPS on an ultrabook iGPU
-cargo run -- --release   # better frame rate, slower to compile (see README note)
+cargo run                # dev build
+cargo run -- --show-fps  # with a live FPS / frame-time / entity-count overlay
 ```
 
-No network connection is needed — all geometry is generated at runtime.
-
-### CLI options (argh)
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--seed <u64>` | `42` | City generation seed |
-| `--size <u32>` | `12` | City size in blocks (larger sizes push the scene into shared-memory thrash on an iGPU) |
-| `--low-graphics` | off | Disable bloom + TAA for a large GPU win |
-| `--no-cars` | off | Disable cars + traffic simulation |
-| `--no-buildings` | off | Disable buildings (keeps roads, ground, trees) |
-| `--no-decorations` | off | Disable trees/fences (keeps ground, roads, buildings, cars) |
-| `--minimal` | off | Only ground tiles + roads (minimal skeleton) |
-| `--width <px>` / `--height <px>` | `1920`/`1080` | Window resolution |
-| `--diagnostics` | off | Log FPS / frame time / entity count every second |
-| `--show-fps` | off | Draw live FPS / frame time / entity count on screen (top-left) |
-
-### Controls (free camera)
+## Controls
 
 | Input | Action |
 |---|---|
-| `WASD` | Move |
-| `E` / `Q` | Up / down |
-| `Shift` (hold) | Run (faster) |
-| `Right mouse` (hold) | Look around |
-| `M` | Toggle cursor grab |
-| `Scroll wheel` | Adjust movement speed |
+| `WASD` | Pan camera |
+| `Shift` (hold) | Pan faster |
+| `Q` / `E` | Rotate camera 90° (animated) |
+| `Scroll wheel` | Zoom in / out |
+| `Left click` | Start / confirm a road segment |
+| `Right click` | Cancel the in-progress road segment |
+
+## Road placement
+
+- A translucent gray sphere (diameter = road width) marks the cursor on the
+  ground.
+- **Left click** picks the start point — it snaps onto an existing road when
+  the cursor is close, so segments can branch.
+- A translucent road preview is drawn from the start point to the cursor.
+- **Second left click** commits the road as opaque and permanent.
+- **Right click** exits back to neutral without building.
+
+All roads are currently straight segments.
+
+## CLI options (argh)
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--width <px>` / `--height <px>` | `1920`/`1080` | Window resolution |
+| `--pretty` | off | Enable bloom + TAA post-processing |
+| `--diagnostics` | off | Log FPS / frame time / entity count every second |
+| `--show-fps` | off | Draw live FPS / frame time / entity count on screen |
 
 ## Project layout
 
 ```
 src/
-  main.rs          app setup, camera, car simulation
-  generate_city.rs procedural city generation (shared meshes/materials, spawn logic)
-  settings.rs      Feathers settings UI
-  diagnostics.rs   optional FPS/entity-count diagnostics + on-screen overlay
+  main.rs       app setup, orthographic camera rig (pan/rotate/zoom)
+  roads.rs      ground plane + road placement mechanic
+  diagnostics.rs optional FPS/entity-count diagnostics + on-screen overlay
+docs/
+  bevy-0.19-api-notes.md   living reference of Bevy 0.19 API differences
 ```
 
-## Performance notes (ultrabook)
+## Notes
 
-- `[profile.dev] opt-level = 1` + deps at `opt-level = 3` follows Bevy's fast-compiles guidance:
-  first build is slow, later builds are quick, runtime stays playable.
-- Capped compile parallelism if RAM is tight: `cargo build -j 4`.
-- Heavy GPU features default off; `--low-graphics` strips bloom/TAA for the biggest win.
-- Run `--show-fps` to watch live FPS / entity counts and confirm your frame budget.
+- Bevy 0.19 changes a lot vs. the widely documented 0.13–0.15 API; see
+  `docs/bevy-0.19-api-notes.md` before writing Bevy code (also mirrored in
+  `AGENTS.md`).
+- Build is fast for iteration: `mold` linker (`.cargo/config.toml`) plus
+  `opt-level = 1` for our code / `opt-level = 3` for deps. First build is slow
+  (~17 min) but incremental builds are ~1–3 s.

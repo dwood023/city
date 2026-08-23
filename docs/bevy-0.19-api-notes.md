@@ -98,3 +98,46 @@ Environment: **Rust 1.98.0**, **Bevy 0.19.1**, **edition 2024** (pinned in
   static transform optimizations.
 - `PresentMode::AutoVsync` is the vsync present mode for a stable frame rate on
   integrated GPUs.
+
+## Mouse picking / ground-plane raycast
+
+- **`PrimaryWindow` is NOT in `prelude`** — import it:
+  ```rust
+  use bevy::window::PrimaryWindow;
+  ```
+- `MouseButton` and `ButtonInput` **are** in `prelude`
+  (`Res<ButtonInput<MouseButton>>`, `.just_pressed(MouseButton::Left)`).
+- Convert a cursor position to a world ray with
+  `Camera::viewport_to_world(&GlobalTransform, Vec2) -> Result<Ray3d, _>`.
+  `Ray3d { origin: Vec3, direction: Dir3 }`; use `ray.direction.as_vec3()`.
+- Read the cursor with `Window::cursor_position() -> Option<Vec2>` (logical px).
+- **Run picking systems in `PostUpdate` after `TransformSystems::Propagate`** so
+  the camera's `GlobalTransform` reflects this frame's movement:
+  ```rust
+  use bevy::transform::TransformSystems;
+  app.add_systems(PostUpdate, my_system.after(TransformSystems::Propagate));
+  ```
+- Ray-vs-`y=0`-plane: `t = -origin.y / dir.y` (skip if `dir.y` ≈ 0 or `t < 0`);
+  the hit point is `origin + dir * t`.
+
+## Transparency / primitives
+
+- Translucent unlit material:
+  ```rust
+  StandardMaterial {
+      base_color: Color::srgba(r, g, b, 0.5),
+      alpha_mode: AlphaMode::Blend,   // in prelude
+      unlit: true,
+      ..default()
+  }
+  ```
+- `Plane3d::default()` is the horizontal XZ plane (normal `+Y`, `half_size`
+  `0.5`) — a `1×1` quad to scale up for a ground plane. `Mesh::from(Plane3d::default())`.
+- `Sphere::new(radius)`, `Cuboid::new(x, y, z)` (full extents), and
+  `Mesh::from(...)` to turn a primitive into a mesh.
+
+## System-param visibility
+
+- A `pub(crate)` system whose signature mentions a module-local `struct`/`enum`
+  (e.g. as `Res<...>` or a `Query` filter) needs those types to be `pub(crate)`
+  too, or the compiler errors "type … is private".

@@ -1,43 +1,28 @@
-//! A minimalist, procedurally generated city.
+//! A road-placement prototype on a flat ground plane.
 //!
-//! All geometry is generated at runtime from a small set of shared colored
-//! primitives (cubes, cylinders, spheres), so the GPU only ever holds a handful
-//! of meshes and Bevy batches every instance into a few draw calls. No glTF
-//! assets, no HTTPS downloads, no network dependency. This is designed to run
-//! smoothly on an integrated GPU (Mini Motorways-style visual style).
+//! The scene is stripped down to a single flat ground plane (`#2e3d2a`) so we
+//! can iterate on mechanics. The player places straight road segments with the
+//! mouse (see `roads`). The camera is a movable orthographic rig (Cities:
+//! Skylines style): Q/E rotate 90°, WASD pans, scroll zooms.
 
 use argh::FromArgs;
 use bevy::{
     anti_alias::taa::TemporalAntiAliasing,
     camera::ScalingMode,
-    color::palettes::css::WHITE,
-    feathers::{dark_theme::create_dark_theme, theme::UiTheme, FeathersPlugins},
     input::mouse::MouseWheel,
-    pbr::wireframe::{WireframeConfig, WireframePlugin},
     post_process::bloom::Bloom,
     prelude::*,
+    transform::TransformSystems,
     window::{PresentMode, WindowResolution},
     winit::WinitSettings,
 };
 
-use crate::generate_city::{setup_assets, spawn_city, MinimalAssets, SpawnConfig};
-use crate::settings::{settings_ui, Settings};
-
 mod diagnostics;
-mod generate_city;
-mod settings;
+mod roads;
 
 #[derive(FromArgs, Resource, Clone)]
 /// Config
 pub struct Args {
-    /// seed
-    #[argh(option, default = "42")]
-    seed: u64,
-
-    /// size
-    #[argh(option, default = "12")]
-    size: u32,
-
     /// enable per-second logging of frame time / FPS / entity count (profiling)
     #[argh(switch)]
     diagnostics: bool,
@@ -55,22 +40,6 @@ pub struct Args {
     #[argh(switch)]
     pretty: bool,
 
-    /// disable the car simulation and cars entirely
-    #[argh(switch)]
-    no_cars: bool,
-
-    /// disable buildings — keeps roads, ground, trees
-    #[argh(switch)]
-    no_buildings: bool,
-
-    /// disable trees and fences — keeps ground, roads, buildings, cars
-    #[argh(switch)]
-    no_decorations: bool,
-
-    /// disable everything except ground tiles and roads (minimal skeleton)
-    #[argh(switch)]
-    minimal: bool,
-
     /// draw FPS / frame time / entity count on screen (top-left)
     #[argh(switch)]
     show_fps: bool,
@@ -84,42 +53,28 @@ fn main() {
         diagnostics::add_diagnostics(&mut app);
     }
 
-    app.add_plugins((
-        DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "minimal_city".into(),
-                resolution: WindowResolution::new(args.width, args.height)
-                    .with_scale_factor_override(1.0),
-                present_mode: PresentMode::AutoVsync,
-                position: WindowPosition::Centered(MonitorSelection::Primary),
-                ..default()
-            }),
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            title: "city-builder".into(),
+            resolution: WindowResolution::new(args.width, args.height)
+                .with_scale_factor_override(1.0),
+            present_mode: PresentMode::AutoVsync,
+            position: WindowPosition::Centered(MonitorSelection::Primary),
             ..default()
         }),
-        FeathersPlugins,
-        WireframePlugin::default(),
-    ))
+        ..default()
+    }))
     .insert_resource(args.clone())
     .insert_resource(ClearColor(Color::srgb(0.55, 0.8, 0.95)))
     .insert_resource(WinitSettings::continuous())
-    .init_resource::<Settings>()
-    .insert_resource(UiTheme(create_dark_theme()))
-    .insert_resource(WireframeConfig {
-        global: false,
-        default_color: WHITE.into(),
-        ..default()
-    })
     .insert_resource(StaticTransformOptimizations::Enabled)
     .init_resource::<CameraRig>()
+    .add_systems(Startup, (spawn_camera, roads::setup_roads))
+    .add_systems(Update, update_camera)
     .add_systems(
-        Startup,
-        (spawn_camera, setup_assets, spawn_city_system).chain(),
-    )
-    .add_systems(Update, (simulate_cars, update_camera));
-
-    // The settings UI spawns once at startup (spawning it every frame would
-    // leak a new UI panel per frame and grind FPS down over time).
-    app.add_systems(Startup, settings_ui.spawn());
+        PostUpdate,
+        roads::road_placement_system.after(TransformSystems::Propagate),
+    );
 
     if args.pretty {
         app.add_systems(Startup, apply_pretty);
@@ -194,10 +149,14 @@ const SHIFT_PAN_MULTIPLIER: f32 = 3.0;
 /// Multiplicative zoom amount per scroll-wheel notch.
 const ZOOM_STEP: f32 = 0.1;
 
-/// Zoom clamps: 1.0 is the default whole-city framing; these bound how far in
-/// and out the camera can go (`base_width / zoom` is the visible width).
+/// Zoom clamps: 1.0 is the default framing; these bound how far in and out the
+/// camera can go (`base_width / zoom` is the visible width).
 const ZOOM_MIN: f32 = 0.5;
 const ZOOM_MAX: f32 = 4.0;
+
+/// Default orthographic framing (world units) at zoom 1.0.
+const CAMERA_BASE_WIDTH: f32 = 120.0;
+const CAMERA_BASE_HEIGHT: f32 = 120.0;
 
 /// Where the camera sits for a given focus point and yaw.
 fn camera_position(focus: Vec3, yaw: f32) -> Vec3 {
@@ -206,15 +165,10 @@ fn camera_position(focus: Vec3, yaw: f32) -> Vec3 {
     focus + Vec3::new(horizontal * yaw.sin(), y, horizontal * yaw.cos())
 }
 
-/// Spawns the orthographic camera, framed to the whole city.
-fn spawn_camera(mut commands: Commands, args: Res<Args>, mut rig: ResMut<CameraRig>) {
-    // City half-extents: width = size * 5.5, depth = size * 4.0. At the 45°
-    // yaw the horizontal extent we must fit is the diagonal; at 45° elevation
-    // the vertical extent is the foreshortened depth plus building heights.
-    // These are generous bounds (with margin) and can be tuned to taste.
-    let s = args.size as f32;
-    rig.base_width = s * 7.5;
-    rig.base_height = s * 4.0;
+/// Spawns the orthographic camera.
+fn spawn_camera(mut commands: Commands, mut rig: ResMut<CameraRig>) {
+    rig.base_width = CAMERA_BASE_WIDTH;
+    rig.base_height = CAMERA_BASE_HEIGHT;
 
     commands.spawn((
         Camera3d::default(),
@@ -302,7 +256,7 @@ fn update_camera(
     }
 }
 
-/// Marks the camera so `--low-graphics` can strip expensive post-processing.
+/// Marks the camera so `--pretty` can attach post-processing to it.
 #[derive(Component, Default, Clone)]
 struct ProfileCameraMarker;
 
@@ -314,70 +268,5 @@ fn apply_pretty(
     for entity in &camera {
         commands.entity(entity).insert(Bloom::NATURAL);
         commands.entity(entity).insert(TemporalAntiAliasing::default());
-    }
-}
-
-/// Spawns the whole city once the shared meshes/materials exist.
-fn spawn_city_system(
-    mut commands: Commands,
-    assets: Res<MinimalAssets>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    args: Res<Args>,
-) {
-    spawn_city(
-        &mut commands,
-        &assets,
-        &mut meshes,
-        args.seed,
-        args.size,
-        SpawnConfig {
-            no_cars: args.no_cars,
-            no_buildings: args.no_buildings,
-            no_decorations: args.no_decorations,
-            minimal: args.minimal,
-        },
-    );
-}
-
-#[derive(Component)]
-struct Road {
-    start: Vec3,
-    end: Vec3,
-}
-
-#[derive(Component)]
-struct Car {
-    offset: Vec3,
-    distance_traveled: f32,
-    dir: f32,
-}
-
-/// Naive traffic simulation: cars slide along their road segment.
-fn simulate_cars(
-    settings: Res<Settings>,
-    args: Res<Args>,
-    roads: Query<(&Road, &Transform, &Children), Without<Car>>,
-    mut cars: Query<(&mut Car, &mut Transform), Without<Road>>,
-    time: Res<Time>,
-) {
-    if !settings.simulate_cars || args.no_cars {
-        return;
-    }
-    let speed = 1.5;
-
-    for (road, _, children) in &roads {
-        for child in children {
-            let Ok((mut car, mut car_transform)) = cars.get_mut(*child) else {
-                continue;
-            };
-            car.distance_traveled += speed * time.delta_secs();
-            let road_len = (road.end - road.start).length();
-            if car.distance_traveled > road_len {
-                car.distance_traveled = 0.0;
-            }
-            let direction = (road.end - road.start).normalize() * car.dir;
-            let progress = car.distance_traveled / road_len;
-            car_transform.translation = (road.start + car.offset) + direction * road_len * progress;
-        }
     }
 }

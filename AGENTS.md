@@ -21,17 +21,25 @@ kept in sync as new gotchas are found). The traps most likely to waste time:
   **`Message`**, not `Event`.
 - **`MouseWheel` is not in `prelude`** → `use bevy::input::mouse::MouseWheel;`.
 - **`ScalingMode` is not in `prelude`** → `use bevy::camera::ScalingMode;`.
+- **`PrimaryWindow` is not in `prelude`** → `use bevy::window::PrimaryWindow;`.
 - `Single<&mut T>` derefs to `Mut<T>`; pattern-matching an enum needs `**single`.
+- Mouse picking: `Camera::viewport_to_world(&GlobalTransform, pos)` → `Ray3d`;
+  run the system in `PostUpdate` after `TransformSystems::Propagate`.
 - Do **not** enable `bevy/dynamic_linking` — broken on crates.io (`bevy_dylib`
   was only published through 0.17.3).
 
 ## Architecture
 
-- Scene is fully procedural and **merged into ~16 meshes** (one per material
-  color) for integrated-GPU performance — see `src/generate_city.rs`.
+- Scene is a flat ground plane (`#2e3d2a`) plus player-placed **straight road
+  segments** — see `src/roads.rs`.
+- Road placement: left-click starts a segment (the start snaps to an existing
+  road when close), a translucent preview follows the cursor, a second
+  left-click commits it, and right-click cancels. Roads are `RoadSegment {
+  start, end }` (`Vec2` on the `y=0` plane), rendered as thin `Cuboid` slabs
+  sharing one unit-length mesh.
 - Camera is a movable **orthographic** rig (Q/E rotate 90° animated, WASD pan,
-  scroll zoom, 45° corner-on yaw) — see `CameraRig` / `update_camera` in
-  `src/main.rs`.
-- `simulate_cars` / `Road` / `Car` in `src/main.rs` are currently **dead code**
-  (cars are merged into meshes, not entities) — the "Simulate Cars" toggle does
-  nothing visible until cars become real entities.
+  Shift = faster pan, scroll zoom, 45° corner-on yaw) — see `CameraRig` /
+  `update_camera` in `src/main.rs`.
+- The procedural city (`generate_city.rs`), car sim, and settings UI were
+  removed to focus on mechanics; they remain in git history (`e2c85b7` and
+  earlier) if needed.

@@ -1,0 +1,59 @@
+name: Build
+
+# Offload the heavy Bevy compile to GitHub Actions (4 cores / 16 GB on
+# ubuntu-latest) so the ultrabook doesn't spend ~20 minutes building.
+#
+# Every run caches `~/.cargo` and `target/` keyed on Cargo.lock, so once the
+# first build has warmed the cache, later runs are near-instant. The finished
+# release binary is uploaded as a downloadable artifact.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: # allow manual runs from the Actions tab
+
+env:
+  CARGO_TERM_COLOR: always
+  # Bevy on Linux needs these system libs at link time (ALSA for audio,
+  # udev for gamepads, wayland/xkbcommon for windowing).
+  LINUX_DEPS: >-
+    libasound2-dev
+    libudev-dev
+    libwayland-dev
+    libxkbcommon-dev
+    pkg-config
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $LINUX_DEPS
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          # Keep in sync with rust-toolchain.toml.
+          components: rustfmt, clippy
+
+      - name: Cache Cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Bevy's target dir is multi-GB; cache both dep and crate builds.
+          shared-key: "build"
+
+      - name: Build (release)
+        run: cargo build --release --locked
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: city-builder-linux
+          path: target/release/city-builder
+          if-no-files-found: error
